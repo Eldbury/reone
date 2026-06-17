@@ -71,7 +71,7 @@ private:
     void updateParticipantAnimations();
 
     glm::vec3 getTalkPosition(const Object &object) const;
-    DialogCamera::Variant getRandomCameraVariant() const;
+    DialogCamera::Variant getCameraVariant(int cameraAngle) const;
     std::string getStuntAnimationName(int ordinal) const;
     AnimationType getStuntAnimationType(int ordinal) const;
 
