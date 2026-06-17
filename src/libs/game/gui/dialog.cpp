@@ -229,7 +229,7 @@ void DialogGUI::updateCamera() {
         auto camera = area->getCamera<DialogCamera>(CameraType::Dialog);
         camera->setListenerPosition(listenerPosition);
         camera->setSpeakerPosition(speakerPosition);
-        camera->setVariant(getRandomCameraVariant());
+        camera->setVariant(getCameraVariant(_currentEntry->cameraAngle));
     } else {
         auto camera = area->getCamera<AnimatedCamera>(CameraType::Animated);
         camera->setFieldOfView(_currentEntry->camFieldOfView != 0.0f ? _currentEntry->camFieldOfView : kDefaultAnimCamFOV);
@@ -251,7 +251,12 @@ glm::vec3 DialogGUI::getTalkPosition(const Object &object) const {
     return (model->absoluteTransform() * talkDummy->absoluteTransform())[3];
 }
 
-DialogCamera::Variant DialogGUI::getRandomCameraVariant() const {
+DialogCamera::Variant DialogGUI::getCameraVariant(int cameraAngle) const {
+    // Only angle 1 has a confirmed K1 normal-dialogue mapping for now.
+    if (cameraAngle == 1) {
+        return _entryEnded ? DialogCamera::Variant::ListenerClose : DialogCamera::Variant::SpeakerClose;
+    }
+
     int r = randomInt(0, 2);
     switch (r) {
     case 0:
