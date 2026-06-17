@@ -222,7 +222,11 @@ void DialogGUI::loadCurrentSpeaker() {
 void DialogGUI::updateCamera() {
     std::shared_ptr<Area> area(_game.module()->area());
 
-    if (_dialog->cameraModel.empty()) {
+    if (_cameraModel && _currentEntry->cameraAnimation != 0) {
+        auto camera = area->getCamera<AnimatedCamera>(CameraType::Animated);
+        camera->setFieldOfView(_currentEntry->camFieldOfView != 0.0f ? _currentEntry->camFieldOfView : kDefaultAnimCamFOV);
+        camera->playAnimation(_currentEntry->cameraAnimation);
+    } else {
         std::shared_ptr<Creature> player(_game.party().player());
         glm::vec3 listenerPosition(player ? getTalkPosition(*player) : glm::vec3(0.0f));
         glm::vec3 speakerPosition(_currentSpeaker ? getTalkPosition(*_currentSpeaker) : glm::vec3(0.0f));
@@ -230,10 +234,6 @@ void DialogGUI::updateCamera() {
         camera->setListenerPosition(listenerPosition);
         camera->setSpeakerPosition(speakerPosition);
         camera->setVariant(getCameraVariant(_currentEntry->cameraAngle));
-    } else {
-        auto camera = area->getCamera<AnimatedCamera>(CameraType::Animated);
-        camera->setFieldOfView(_currentEntry->camFieldOfView != 0.0f ? _currentEntry->camFieldOfView : kDefaultAnimCamFOV);
-        camera->playAnimation(_currentEntry->cameraAnimation);
     }
 }
 
