@@ -425,13 +425,12 @@ void Conversation::update(float dt) {
 }
 
 CameraType Conversation::getCamera(int &cameraId) const {
-    std::string cameraModel(_dialog->cameraModel);
-    if (!cameraModel.empty()) {
-        return CameraType::Animated;
-    }
     if (_currentEntry->cameraId != 0) {
         cameraId = _currentEntry->cameraId;
         return CameraType::Static;
+    }
+    if (_cameraModel && _currentEntry->cameraAnimation != 0) {
+        return CameraType::Animated;
     }
     return CameraType::Dialog;
 }
