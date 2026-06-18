@@ -80,6 +80,13 @@ void SceneGraph::clear() {
 }
 
 void SceneGraph::addRoot(std::shared_ptr<ModelSceneNode> node) {
+    // Registering the same model root more than once (e.g. an object attached on
+    // add and again on area activation) would update and animate it twice per
+    // frame. Skip duplicates by node identity.
+    auto it = std::find_if(_modelRoots.begin(), _modelRoots.end(), [&node](auto &root) { return root.get() == node.get(); });
+    if (it != _modelRoots.end()) {
+        return;
+    }
     _modelRoots.push_back(std::move(node));
 }
 
