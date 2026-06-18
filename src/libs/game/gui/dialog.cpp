@@ -51,6 +51,12 @@ static const char kControlTagTopFrame[] = "TOP";
 static const char kControlTagBottomFrame[] = "BOTTOM";
 static const char kObjectTagOwner[] = "owner";
 
+// K1 stunt/cut participant animation ordinals: 1200 maps to cut001w, 1201 to
+// cut002w, etc. The upper bound excludes the K2 1400-range, which is not handled
+// here.
+static constexpr int kStuntAnimationOrdinalBase = 1200;
+static constexpr int kStuntAnimationOrdinalEnd = 1300;
+
 static const std::unordered_map<std::string, AnimationType> g_animTypeByName {
     {"dead", AnimationType::LoopingDead},
     {"taunt", AnimationType::FireForgetTaunt},
@@ -143,7 +149,7 @@ void DialogGUI::onStart() {
 }
 
 void DialogGUI::loadStuntParticipants() {
-    if (!_dialog->isAnimatedCutscene())
+    if (!hasStuntPresentation())
         return;
 
     _participantByTag.clear();
@@ -152,6 +158,8 @@ void DialogGUI::loadStuntParticipants() {
         std::shared_ptr<Creature> creature;
         if (stunt.participant == kObjectTagOwner) {
             creature = std::dynamic_pointer_cast<Creature>(_owner);
+        } else if (stunt.participant == kObjectTagPlayer) {
+            creature = _game.party().player();
         } else {
             creature = std::dynamic_pointer_cast<Creature>(_game.module()->area()->getObjectByTag(stunt.participant));
         }
@@ -162,28 +170,79 @@ void DialogGUI::loadStuntParticipants() {
         Participant participant;
         participant.creature = creature;
 
+        std::shared_ptr<Model> model(_services.resource.models.get(stunt.stuntModel));
+        if (!model) {
+            warn("Dialog: stunt model not found: " + stunt.stuntModel);
+            continue;
+        }
+        participant.model = model;
+
+        // Whole-dialogue cutscenes (AnimatedCut=1, e.g. Endar) keep every
+        // participant in stunt mode for the entire conversation. Mixed dialogues
+        // (CameraModel + StuntList but AnimatedCut=0, e.g. Taris) enter stunt mode
+        // per matching entry instead, so normal dialogue entries are left alone.
         if (_dialog->isAnimatedCutscene()) {
-            std::shared_ptr<Model> model(_services.resource.models.get(stunt.stuntModel));
-            if (!model) {
-                warn("Dialog: stunt model not found: " + stunt.stuntModel);
-                continue;
-            }
-            participant.model = model;
             creature->startStuntMode();
+            participant.creature->setIsInConversation(true);
         }
 
-        participant.creature->setIsInConversation(true);
         _participantByTag.insert(std::make_pair(stunt.participant, std::move(participant)));
     }
+}
+
+bool DialogGUI::hasStuntPresentation() const {
+    return _dialog->isAnimatedCutscene() || (!_dialog->cameraModel.empty() && !_dialog->stunts.empty());
+}
+
+bool DialogGUI::isStuntParticipantAnimation(const std::string &participant, int ordinal) const {
+    // A participant animation is a stunt/cut animation when the dialogue provides
+    // an animated camera model, the StuntList maps the participant to a stunt
+    // model, and the entry animation id falls in the K1 cut###w range. This is
+    // data-driven: it relies only on CameraModel/StuntList/AnimList, never on
+    // module, dialogue, creature or model names.
+    if (_dialog->cameraModel.empty()) {
+        return false;
+    }
+    if (ordinal < kStuntAnimationOrdinalBase || ordinal >= kStuntAnimationOrdinalEnd) {
+        return false;
+    }
+    return _participantByTag.count(participant) > 0;
 }
 
 void DialogGUI::onLoadEntry() {
     loadCurrentSpeaker();
     updateCamera();
     updateParticipantAnimations();
+    restoreInactiveStuntParticipants();
     repositionMessage();
 
     _controls.LB_REPLIES->setVisible(false);
+}
+
+void DialogGUI::restoreInactiveStuntParticipants() {
+    // Whole-dialogue cutscenes stay in stunt mode until the conversation finishes.
+    if (_dialog->isAnimatedCutscene()) {
+        return;
+    }
+    // In a mixed dialogue, take a participant out of the per-entry stunt mode as
+    // soon as an entry no longer drives it with a stunt animation, so normal
+    // dialogue entries (e.g. after the wake-up) do not leave it stuck.
+    for (auto &entry : _participantByTag) {
+        Creature &creature = *entry.second.creature;
+        if (!creature.isStuntMode()) {
+            continue;
+        }
+        bool drivenThisEntry = false;
+        for (auto &anim : _currentEntry->animations) {
+            if (anim.participant == entry.first && isStuntParticipantAnimation(anim.participant, anim.animation)) {
+                drivenThisEntry = true;
+                break;
+            }
+        }
+        if (!drivenThisEntry) {
+            creature.stopStuntMode();
+        }
+    }
 }
 
 void DialogGUI::loadCurrentSpeaker() {
@@ -284,6 +343,22 @@ void DialogGUI::updateParticipantAnimations() {
                 properties.scale = 1.0f;
                 participant.creature->playAnimation(animation, std::move(properties));
             }
+        } else if (isStuntParticipantAnimation(anim.participant, anim.animation)) {
+            // Mixed dialogue (AnimatedCut=0) stunt entry: drive the real resolved
+            // participant with the stunt model's cut###w animation, the same way a
+            // whole-dialogue cutscene does, but only for this matching entry.
+            const Participant &participant = _participantByTag.at(anim.participant);
+            std::string animName(getStuntAnimationName(anim.animation));
+            std::shared_ptr<Animation> animation(participant.model->getAnimation(animName));
+            if (animation) {
+                if (!participant.creature->isStuntMode()) {
+                    participant.creature->startStuntMode();
+                }
+                AnimationProperties properties;
+                properties.flags = AnimationFlags::propagate;
+                properties.scale = 1.0f;
+                participant.creature->playAnimation(animation, std::move(properties));
+            }
         } else {
             std::shared_ptr<Creature> participant;
             if (anim.participant == "owner") {
@@ -339,7 +414,7 @@ void DialogGUI::repositionMessage() {
 }
 
 void DialogGUI::onFinish() {
-    if (_dialog->isAnimatedCutscene()) {
+    if (hasStuntPresentation()) {
         releaseStuntParticipants();
     }
 

@@ -69,11 +69,14 @@ private:
 
     void updateCamera();
     void updateParticipantAnimations();
+    void restoreInactiveStuntParticipants();
 
     glm::vec3 getTalkPosition(const Object &object) const;
     DialogCamera::Variant getCameraVariant(int cameraAngle) const;
     std::string getStuntAnimationName(int ordinal) const;
     AnimationType getStuntAnimationType(int ordinal) const;
+    bool hasStuntPresentation() const;
+    bool isStuntParticipantAnimation(const std::string &participant, int ordinal) const;
 
     void setMessage(std::string message) override;
     void setReplyLines(std::vector<std::string> lines) override;
