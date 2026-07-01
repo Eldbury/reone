@@ -53,6 +53,8 @@ private:
 
     std::shared_ptr<Object> _currentSpeaker;
     std::map<std::string, Participant> _participantByTag;
+    DialogCamera::Variant _lineCameraVariant {DialogCamera::Variant::SpeakerClose};
+    bool _lineCameraVariantValid {false};
 
     void preload(gui::IGUI &gui) override;
     void onGUILoaded() override;
@@ -72,7 +74,11 @@ private:
     void restoreInactiveStuntParticipants();
 
     glm::vec3 getTalkPosition(const Object &object) const;
+    float getModelHeight(const Object &object) const;
+    bool hasTalkDummy(const Object &object) const;
+    bool isReplyMenuCameraPhase() const;
     DialogCamera::Variant getCameraVariant(int cameraAngle) const;
+    void invalidateLineCameraVariant(const char *reason);
     std::string getStuntAnimationName(int ordinal) const;
     AnimationType getStuntAnimationType(int ordinal) const;
     bool hasStuntPresentation() const;

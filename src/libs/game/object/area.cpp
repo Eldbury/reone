@@ -165,7 +165,7 @@ void Area::loadCameraStyle(const resource::generated::ARE &are) {
     // Combat
     std::shared_ptr<CameraStyle> combatStyle(_services.game.cameraStyles.get("Combat"));
     if (combatStyle) {
-        _camStyleDefault = *combatStyle;
+        _camStyleCombat = *combatStyle;
     } else {
         _camStyleCombat = g_defaultCameraStyle;
     }

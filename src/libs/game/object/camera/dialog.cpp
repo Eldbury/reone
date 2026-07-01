@@ -36,6 +36,15 @@ namespace game {
 
 static constexpr float kMinDialogCameraDistance = 0.0001f;
 
+// Close-variant effective participant distance cap. The original close
+// composition (midpoint-based, distance-scaled offsets) is preserved; only the
+// participant distance used to build the close shot is capped. Normal-distance
+// shots (distance <= cap) are identical to the original composition; excessive
+// separation is framed as if the other participant were only this far away, so
+// large actor separation no longer loosens the close shot. This is a general
+// maximum effective dialogue-close distance, not actor/area specific.
+static constexpr float kCloseMaxEffectiveDistance = 1.05f;
+
 enum class DialogCameraWarning {
     CannotResolveEndpoints,
     InvalidResolvedEndpoints,
@@ -126,6 +135,25 @@ void DialogCamera::setListenerPosition(glm::vec3 position) {
     }
 }
 
+void DialogCamera::setSpeakerExtent(float height) {
+    if (_speakerHeight != height) {
+        _speakerHeight = height;
+        updateSceneNode();
+    }
+}
+
+void DialogCamera::setListenerExtent(float height) {
+    if (_listenerHeight != height) {
+        _listenerHeight = height;
+        updateSceneNode();
+    }
+}
+
+// CAMDIAG: exposes the close-variant effective distance cap for diagnostics.
+float DialogCamera::closeDistanceCap() const {
+    return kCloseMaxEffectiveDistance;
+}
+
 void DialogCamera::setVariant(Variant variant) {
     if (_variant != variant) {
         _variant = variant;
@@ -158,33 +186,47 @@ void DialogCamera::updateSceneNode() {
 
     glm::vec3 eye(0.0f);
     glm::vec3 target(0.0f);
+    bool closeVariant = _variant == Variant::SpeakerClose || _variant == Variant::ListenerClose;
     switch (_variant) {
     case Variant::SpeakerClose:
-        eye = center;
-        eye -= glm::min(0.25f * distance, 1.0f) * dir;
-        eye += glm::min(0.25f * distance, 1.0f) * glm::cross(dir, down);
+    case Variant::ListenerClose: {
+        // Original close composition (midpoint-based, distance-scaled offsets),
+        // but built from a capped effective participant distance instead of the
+        // raw separation. The subject is the speaker for SpeakerClose and the
+        // listener for ListenerClose; dir points listener -> speaker, so the
+        // step toward the other participant is -dir for the speaker and +dir for
+        // the listener. At normal separation (distance <= cap) this reproduces
+        // the original shot exactly; only excessive separation is reined in.
+        bool speakerSubject = _variant == Variant::SpeakerClose;
+        glm::vec3 subjectPosition(speakerSubject ? speakerPosition : listenerPosition);
+        float towardOther = speakerSubject ? -1.0f : 1.0f;
+
+        float effectiveDistance = glm::min(distance, kCloseMaxEffectiveDistance);
+        float closeOffset = glm::min(0.25f * effectiveDistance, 1.0f);
+
+        // Effective midpoint: the original center, but with the other participant
+        // pulled in to at most the capped distance from the subject.
+        glm::vec3 effectiveCenter(subjectPosition + towardOther * 0.5f * effectiveDistance * dir);
+
+        eye = effectiveCenter;
+        eye += towardOther * closeOffset * dir;
+        eye += closeOffset * glm::cross(dir, down);
         eye += 0.1f * up;
 
-        target = speakerPosition;
-        target -= 0.1f * distance * glm::cross(dir, down);
+        target = subjectPosition;
+        target -= 0.1f * effectiveDistance * glm::cross(dir, down);
         target += 0.1f * up;
+
+        _lastCloseEffectiveDist = effectiveDistance;
+        _lastCloseOffset = closeOffset;
         break;
+    }
     case Variant::SpeakerFar:
         eye = listenerPosition;
         eye -= 0.5f * distance * dir;
         eye += 0.5f * distance * glm::cross(dir, down);
 
         target = center;
-        break;
-    case Variant::ListenerClose:
-        eye = center;
-        eye += glm::min(0.25f * distance, 1.0f) * dir;
-        eye += glm::min(0.25f * distance, 1.0f) * glm::cross(dir, down);
-        eye += 0.1f * up;
-
-        target = listenerPosition;
-        target -= 0.1f * distance * glm::cross(dir, down);
-        target += 0.1f * up;
         break;
     case Variant::ListenerFar:
         eye = speakerPosition;
@@ -206,8 +248,16 @@ void DialogCamera::updateSceneNode() {
 
     Collision collision;
     auto &scene = _services.scene.graphs.get(_sceneName);
-    if (scene.testLineOfSight(target, eye, collision)) {
+    bool losFired = scene.testLineOfSight(target, eye, collision);
+    if (losFired) {
         eye = collision.intersection;
+    }
+
+    if (closeVariant) {
+        // CAMDIAG: record final close framing for the close-camera investigation.
+        _lastCloseEye = eye;
+        _lastCloseTarget = target;
+        _lastCloseLosFired = losFired;
     }
 
     if (!isFinite(eye) || !isFinite(target)) {

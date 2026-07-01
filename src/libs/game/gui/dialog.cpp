@@ -17,6 +17,8 @@
 
 #include "reone/game/gui/dialog.h"
 
+#include <cstdint>
+
 #include "reone/audio/mixer.h"
 #include "reone/audio/source.h"
 #include "reone/graphics/di/services.h"
@@ -142,6 +144,7 @@ void DialogGUI::configureReplies() {
 
 void DialogGUI::onStart() {
     _currentSpeaker = _owner;
+    _lineCameraVariantValid = false;
     loadStuntParticipants();
 
     auto camera = _game.module()->area()->getCamera<AnimatedCamera>(CameraType::Animated);
@@ -211,9 +214,9 @@ bool DialogGUI::isStuntParticipantAnimation(const std::string &participant, int 
 
 void DialogGUI::onLoadEntry() {
     loadCurrentSpeaker();
+    restoreInactiveStuntParticipants();
     updateCamera();
     updateParticipantAnimations();
-    restoreInactiveStuntParticipants();
     repositionMessage();
 
     _controls.LB_REPLIES->setVisible(false);
@@ -278,22 +281,206 @@ void DialogGUI::loadCurrentSpeaker() {
     }
 }
 
+// CAMDIAG: temporary debug helper, remove after camera-variant investigation
+static const char *dbgVariantName(DialogCamera::Variant v) {
+    switch (v) {
+    case DialogCamera::Variant::Both:
+        return "Both";
+    case DialogCamera::Variant::SpeakerClose:
+        return "SpeakerClose";
+    case DialogCamera::Variant::SpeakerFar:
+        return "SpeakerFar";
+    case DialogCamera::Variant::ListenerClose:
+        return "ListenerClose";
+    case DialogCamera::Variant::ListenerFar:
+        return "ListenerFar";
+    default:
+        return "?";
+    }
+}
+
+// Deterministic per-node auto camera: a stable seed (conversation resref + entry
+// index) drives variant selection, so a given dialogue node always yields the same
+// shot, identical across the branches that reach it, with no per-call RNG.
+static uint32_t dlgNodeMix(uint32_t x) {
+    x *= 2654435761u;
+    x ^= x >> 15;
+    x *= 2246822519u;
+    x ^= x >> 13;
+    return x;
+}
+
+static uint32_t dlgNodeSeed(const std::string &resRef, size_t entryIndex) {
+    uint32_t h = 2166136261u; // FNV-1a over the conversation resref
+    for (char c : resRef) {
+        h ^= static_cast<uint8_t>(c);
+        h *= 16777619u;
+    }
+    return h ^ static_cast<uint32_t>(entryIndex);
+}
+
+// NPC line auto camera: mostly a speaker close-up, occasionally a wide shot. Never
+// the flat two-shot (Both) or listener-focused variants during an NPC line.
+static DialogCamera::Variant autoLineVariant(uint32_t seed) {
+    static const DialogCamera::Variant kSet[] = {
+        DialogCamera::Variant::SpeakerClose,
+        DialogCamera::Variant::SpeakerClose,
+        DialogCamera::Variant::SpeakerClose,
+        DialogCamera::Variant::SpeakerClose,
+        DialogCamera::Variant::SpeakerFar,
+    };
+    return kSet[dlgNodeMix(seed) % (sizeof(kSet) / sizeof(kSet[0]))];
+}
+
+// Visible reply menu: always player-facing; mostly a listener close-up, occasionally
+// the over-the-shoulder (listener far) framing.
+static DialogCamera::Variant autoMenuVariant(uint32_t seed) {
+    static const DialogCamera::Variant kSet[] = {
+        DialogCamera::Variant::ListenerClose,
+        DialogCamera::Variant::ListenerClose,
+        DialogCamera::Variant::ListenerFar,
+    };
+    return kSet[dlgNodeMix(seed ^ 0x9e3779b9u) % (sizeof(kSet) / sizeof(kSet[0]))];
+}
+
 void DialogGUI::updateCamera() {
     std::shared_ptr<Area> area(_game.module()->area());
+    bool replyMenuPhase = isReplyMenuCameraPhase();
+    int replyItems = _controls.LB_REPLIES->getItemCount();
+
+    if (_currentEntry->cameraId != 0) {
+        invalidateLineCameraVariant("static");
+        // CAMDIAG: temporary, remove after investigation
+        info(str(boost::format("CAMDIAG updateCamera phase=%s type=Static source=static cameraId=%d "
+                               "camAnim=%d camAngle=%d visibleReplyMenu=%d replyItems=%d lineValid=%d") %
+                 (_entryEnded ? "reply" : "line") % _currentEntry->cameraId %
+                 _currentEntry->cameraAnimation % _currentEntry->cameraAngle %
+                 replyMenuPhase % replyItems % _lineCameraVariantValid));
+        return;
+    }
 
     if (_cameraModel && _currentEntry->cameraAnimation != 0) {
+        invalidateLineCameraVariant("animated");
         auto camera = area->getCamera<AnimatedCamera>(CameraType::Animated);
         camera->setFieldOfView(_currentEntry->camFieldOfView != 0.0f ? _currentEntry->camFieldOfView : kDefaultAnimCamFOV);
         camera->playAnimation(_currentEntry->cameraAnimation);
+        // CAMDIAG: temporary, remove after investigation
+        info(str(boost::format("CAMDIAG updateCamera phase=%s type=Animated source=animated camAnim=%d camAngle=%d "
+                               "camFOV=%.1f visibleReplyMenu=%d replyItems=%d lineValid=%d") %
+                 (_entryEnded ? "reply" : "line") % _currentEntry->cameraAnimation % _currentEntry->cameraAngle %
+                 _currentEntry->camFieldOfView % replyMenuPhase % replyItems % _lineCameraVariantValid));
     } else {
         std::shared_ptr<Creature> player(_game.party().player());
         glm::vec3 listenerPosition(player ? getTalkPosition(*player) : glm::vec3(0.0f));
         glm::vec3 speakerPosition(_currentSpeaker ? getTalkPosition(*_currentSpeaker) : glm::vec3(0.0f));
         auto camera = area->getCamera<DialogCamera>(CameraType::Dialog);
+        camera->setListenerExtent(player ? getModelHeight(*player) : 0.0f);
+        camera->setSpeakerExtent(_currentSpeaker ? getModelHeight(*_currentSpeaker) : 0.0f);
         camera->setListenerPosition(listenerPosition);
         camera->setSpeakerPosition(speakerPosition);
-        camera->setVariant(getCameraVariant(_currentEntry->cameraAngle));
+        size_t entryIndex = static_cast<size_t>(_currentEntry - &_dialog->getEntry(0));
+        uint32_t nodeSeed = dlgNodeSeed(_dialog->resRef, entryIndex);
+
+        DialogCamera::Variant variant {DialogCamera::Variant::SpeakerClose};
+        const char *source = "autoNode";
+
+        if (replyMenuPhase) {
+            // Visible reply menu: player-facing, deterministically close or
+            // over-the-shoulder per menu node. A menu also ends the line segment.
+            invalidateLineCameraVariant("replyMenu");
+            variant = autoMenuVariant(nodeSeed);
+            source = "replyMenu";
+        } else if (_entryEnded) {
+            // Invisible auto-continue phase: keep the current camera. The next
+            // entry's line phase reselects deterministically; nothing is held.
+            // CAMDIAG: temporary, remove after investigation
+            info(str(boost::format("CAMDIAG updateCamera phase=line type=Dialog source=autoContinue node=%d seed=%u "
+                                   "camAngle=%d visibleReplyMenu=0 replyItems=%d lineValid=%d") %
+                     static_cast<int>(entryIndex) % nodeSeed % _currentEntry->cameraAngle % replyItems % _lineCameraVariantValid));
+            return;
+        } else if (_currentEntry->cameraAngle != 0) {
+            // Explicit angle overrides the auto selector and may hold into an
+            // immediate angle=0 continuation (preserves explicit-close openings).
+            variant = getCameraVariant(_currentEntry->cameraAngle);
+            _lineCameraVariant = variant;
+            _lineCameraVariantValid = true;
+            source = "explicitAngle";
+        } else if (_lineCameraVariantValid) {
+            variant = _lineCameraVariant;
+            source = "holdExplicit";
+        } else {
+            // CameraAngle=0 auto camera: deterministic per-node selection. Stable
+            // for a given node (same shot every visit, identical across branches),
+            // no per-call RNG, no hold-forever.
+            variant = autoLineVariant(nodeSeed);
+            source = "autoNode";
+        }
+
+        camera->setVariant(variant);
+        // CAMDIAG: temporary, remove after investigation
+        float dist = glm::length(speakerPosition - listenerPosition);
+        info(str(boost::format("CAMDIAG updateCamera phase=%s type=Dialog source=%s node=%d seed=%u variant=%s "
+                               "camAngle=%d visibleReplyMenu=%d replyItems=%d lineValid=%d speakerTag=%s dist=%.2f") %
+                 (replyMenuPhase ? "replyMenu" : "line") % source % static_cast<int>(entryIndex) % nodeSeed % dbgVariantName(variant) %
+                 _currentEntry->cameraAngle % replyMenuPhase % replyItems % _lineCameraVariantValid %
+                 (_currentSpeaker ? _currentSpeaker->tag() : std::string("<none>")) % dist));
+
+        // CAMDIAG: capped-distance close-framing detail, remove after investigation.
+        bool closeVariant = variant == DialogCamera::Variant::SpeakerClose ||
+                            variant == DialogCamera::Variant::ListenerClose;
+        if (closeVariant) {
+            bool speakerSubject = variant == DialogCamera::Variant::SpeakerClose;
+            std::shared_ptr<Object> subject(speakerSubject ? _currentSpeaker : std::static_pointer_cast<Object>(player));
+            std::shared_ptr<Object> other(speakerSubject ? std::static_pointer_cast<Object>(player) : _currentSpeaker);
+            glm::vec3 talkTarget(speakerSubject ? speakerPosition : listenerPosition);
+            glm::vec3 subjectPosition(talkTarget);
+            glm::vec3 otherPosition(speakerSubject ? listenerPosition : speakerPosition);
+            float towardOther = speakerSubject ? -1.0f : 1.0f;
+            glm::vec3 usedDirection(dist > 0.0001f ? glm::normalize(speakerPosition - listenerPosition) : glm::vec3(0.0f));
+            glm::vec3 actualOtherDirection(dist > 0.0001f ? glm::normalize(otherPosition - subjectPosition) : glm::vec3(0.0f));
+            glm::vec3 effectiveCenter(subjectPosition + towardOther * 0.5f * camera->lastCloseEffectiveDist() * usedDirection);
+            glm::vec3 eye(camera->lastCloseEye());
+            glm::vec3 tgt(camera->lastCloseTarget());
+            info(str(boost::format("CAMDIAG closeFraming variant=%s dist=%.2f effectiveDist=%.2f closeDistanceCap=%.2f "
+                                   "subjectTag=%s otherTag=%s "
+                                   "talkTarget=(%.2f,%.2f,%.2f) finalTarget=(%.2f,%.2f,%.2f) finalEye=(%.2f,%.2f,%.2f) "
+                                   "closeOffset=%.2f sideOffset=%.2f viewAngle=%.1f losFired=%d "
+                                   "speakerPosition=(%.2f,%.2f,%.2f) listenerPosition=(%.2f,%.2f,%.2f) "
+                                   "subjectPosition=(%.2f,%.2f,%.2f) otherPosition=(%.2f,%.2f,%.2f) "
+                                   "dir=(%.3f,%.3f,%.3f) effectiveCenter=(%.2f,%.2f,%.2f) towardOther=%.1f "
+                                   "actualOtherDirection=(%.3f,%.3f,%.3f) usedDirection=(%.3f,%.3f,%.3f)") %
+                     dbgVariantName(variant) % dist %
+                     camera->lastCloseEffectiveDist() % camera->closeDistanceCap() %
+                     (subject ? subject->tag() : std::string("<none>")) %
+                     (other ? other->tag() : std::string("<none>")) %
+                     talkTarget.x % talkTarget.y % talkTarget.z %
+                     tgt.x % tgt.y % tgt.z % eye.x % eye.y % eye.z %
+                     camera->lastCloseOffset() % camera->lastCloseOffset() %
+                     camera->viewAngle() % camera->lastCloseLosFired() %
+                     speakerPosition.x % speakerPosition.y % speakerPosition.z %
+                     listenerPosition.x % listenerPosition.y % listenerPosition.z %
+                     subjectPosition.x % subjectPosition.y % subjectPosition.z %
+                     otherPosition.x % otherPosition.y % otherPosition.z %
+                     usedDirection.x % usedDirection.y % usedDirection.z %
+                     effectiveCenter.x % effectiveCenter.y % effectiveCenter.z % towardOther %
+                     actualOtherDirection.x % actualOtherDirection.y % actualOtherDirection.z %
+                     usedDirection.x % usedDirection.y % usedDirection.z));
+        }
     }
+}
+
+bool DialogGUI::isReplyMenuCameraPhase() const {
+    return _entryEnded && _controls.LB_REPLIES->isVisible() && _controls.LB_REPLIES->getItemCount() > 0;
+}
+
+void DialogGUI::invalidateLineCameraVariant(const char *reason) {
+    if (!_lineCameraVariantValid) {
+        return;
+    }
+    // CAMDIAG: temporary, remove after investigation
+    info(str(boost::format("CAMDIAG lineCameraBoundary reason=%s previousVariant=%s") %
+             reason % dbgVariantName(_lineCameraVariant)));
+    _lineCameraVariantValid = false;
 }
 
 glm::vec3 DialogGUI::getTalkPosition(const Object &object) const {
@@ -310,13 +497,41 @@ glm::vec3 DialogGUI::getTalkPosition(const Object &object) const {
     return (model->absoluteTransform() * talkDummy->absoluteTransform())[3];
 }
 
+// Subject model height (local-space AABB Z-extent) used to make close framing
+// model-aware. Returns 0 when no model bounds are available; the camera then
+// falls back to a human-scale default.
+float DialogGUI::getModelHeight(const Object &object) const {
+    auto node = object.sceneNode();
+    if (!node || node->type() != SceneNodeType::Model) {
+        return 0.0f;
+    }
+    const auto &box = node->aabb();
+    if (box.isDegenerate()) {
+        return 0.0f;
+    }
+    return box.max().z - box.min().z;
+}
+
+bool DialogGUI::hasTalkDummy(const Object &object) const {
+    auto node = object.sceneNode();
+    if (!node || node->type() != SceneNodeType::Model) {
+        return false;
+    }
+    auto model = std::static_pointer_cast<ModelSceneNode>(node);
+    return static_cast<bool>(model->model().getNodeByNameRecursive("talkdummy"));
+}
+
 DialogCamera::Variant DialogGUI::getCameraVariant(int cameraAngle) const {
     // Only angle 1 has a confirmed K1 normal-dialogue mapping for now.
     if (cameraAngle == 1) {
+        // CAMDIAG: temporary, remove after investigation
+        info(str(boost::format("CAMDIAG getCameraVariant camAngle=1 entryEnded=%d branch=deterministic") % _entryEnded));
         return _entryEnded ? DialogCamera::Variant::ListenerClose : DialogCamera::Variant::SpeakerClose;
     }
 
     int r = randomInt(0, 2);
+    // CAMDIAG: temporary, remove after investigation
+    info(str(boost::format("CAMDIAG getCameraVariant camAngle=%d entryEnded=%d branch=random r=%d") % cameraAngle % _entryEnded % r));
     switch (r) {
     case 0:
         return _entryEnded ? DialogCamera::Variant::ListenerClose : DialogCamera::Variant::SpeakerClose;

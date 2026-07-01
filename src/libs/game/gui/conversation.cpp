@@ -203,12 +203,18 @@ void Conversation::loadEntry(int index, bool start) {
     debug("Load entry " + std::to_string(index), LogChannel::Conversation);
     _currentEntry = &_dialog->getEntry(index);
 
+    // CAMDIAG: temporary, remove after camera-variant investigation
+    info(str(boost::format("CAMDIAG loadEntry idx=%d start=%d camAnim=%d camAngle=%d speaker=%s hasText=%d sound=%s vo=%s") %
+             index % start % _currentEntry->cameraAnimation % _currentEntry->cameraAngle %
+             (_currentEntry->speaker.empty() ? std::string("<none>") : _currentEntry->speaker) %
+             (!_currentEntry->text.empty()) %
+             (_currentEntry->sound.empty() ? std::string("<none>") : _currentEntry->sound) %
+             (_currentEntry->voResRef.empty() ? std::string("<none>") : _currentEntry->voResRef)));
+
     std::string entryText(_game.substituteCustomTokens(_currentEntry->text));
     setMessage(entryText);
     loadReplies();
     loadVoiceOver();
-    scheduleEndOfEntry();
-    onLoadEntry();
 
     // Conversation is a one-liner if there is exactly one empty reply that has no entries
     bool oneLiner = false;
@@ -216,6 +222,20 @@ void Conversation::loadEntry(int index, bool start) {
         const Dialog::EntryReply &reply = *_replies[0];
         oneLiner = reply.text.empty() && reply.entries.empty();
     }
+
+    // A non-presentational routing/setup entry carries no visible payload and can be
+    // auto-continued by the existing reply rules. Run its scripts and advance without
+    // presenting (or holding) a camera shot, so it never becomes a visible dialogue shot.
+    if (!oneLiner && isNonPresentationalEntry()) {
+        debug("Skip non-presentational entry " + std::to_string(index), LogChannel::Conversation);
+        runScripts(*_currentEntry);
+        pickReply(0);
+        return;
+    }
+
+    scheduleEndOfEntry();
+    onLoadEntry();
+
     if (oneLiner) {
         _game.setBarkBubbleText(std::move(entryText), _entryDuration);
         debug("Dialog: finish (one-liner)");
@@ -322,7 +342,31 @@ void Conversation::refreshReplies() {
 
 void Conversation::pickReply(int index) {
     debug("Pick reply " + std::to_string(index), LogChannel::Conversation);
+    // CAMDIAG: temporary, remove after investigation
+    info(str(boost::format("CAMDIAG pickReply idx=%d") % index));
     const Dialog::EntryReply &reply = *_replies[index];
+
+    // CAMDIAG: temporary, capture selected reply fields. Remove after investigation.
+    {
+        std::string entryIndices;
+        for (auto &link : reply.entries) {
+            if (!entryIndices.empty()) {
+                entryIndices += ",";
+            }
+            entryIndices += std::to_string(link.index);
+        }
+        info(str(boost::format("CAMDIAG replyFields idx=%d hasText=%d text=\"%s\" speaker=%s listener=%s "
+                               "camAngle=%d camId=%d camAnim=%d camFOV=%.1f vo=%s sound=%s delay=%d "
+                               "anims=%d entries=[%s]") %
+                 index % (!reply.text.empty()) % reply.text %
+                 (reply.speaker.empty() ? std::string("<none>") : reply.speaker) %
+                 (reply.listener.empty() ? std::string("<none>") : reply.listener) %
+                 reply.cameraAngle % reply.cameraId % reply.cameraAnimation % reply.camFieldOfView %
+                 (reply.voResRef.empty() ? std::string("<none>") : reply.voResRef) %
+                 (reply.sound.empty() ? std::string("<none>") : reply.sound) %
+                 reply.delay % static_cast<int>(reply.animations.size()) %
+                 entryIndices));
+    }
 
     // Run reply scripts
     runScripts(reply);
@@ -365,8 +409,40 @@ bool Conversation::isSkippableEntry() const {
     return g_allEntriesSkippable || (_dialog->isSkippable() && !_paused);
 }
 
+bool Conversation::isNonPresentationalEntry() const {
+    // A routing/setup entry only carries scripts and a single auto-picked
+    // continuation; it has nothing the player should see or hear. Such an entry
+    // should run and advance rather than holding a visible dialogue shot. This is
+    // purely payload-driven and does not key off any module, dialogue, creature,
+    // script or animation name.
+    if (!_autoPickFirstReply) {
+        return false; // continuation is a real choice, not an auto-routed step
+    }
+    if (!_currentEntry->text.empty()) {
+        return false; // displayed text
+    }
+    if (!_currentEntry->sound.empty() || !_currentEntry->voResRef.empty()) {
+        return false; // voice over / sound
+    }
+    if (_currentEntry->cameraAnimation != 0) {
+        return false; // animated camera shot
+    }
+    if (_currentEntry->cameraId != 0 || _currentEntry->cameraAngle != 0) {
+        return false; // explicit camera shot/angle to present
+    }
+    if (!_currentEntry->animations.empty()) {
+        return false; // participant animations
+    }
+    if (_currentEntry->delay != -1) {
+        return false; // an authored hold duration is an intentional visible beat
+    }
+    return true;
+}
+
 void Conversation::endCurrentEntry() {
     _entryEnded = true;
+    // CAMDIAG: temporary, remove after investigation
+    info("CAMDIAG endCurrentEntry entryEnded=true");
 
     // Stop voice over, if any
     if (_currentVoice) {
