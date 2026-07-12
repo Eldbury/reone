@@ -45,6 +45,7 @@ struct ModuleInfo {
     float entryFacing {0.0f};
     std::string onModLoad;
     std::string onModStart;
+    std::string onClientEnter;
 };
 
 class Door;
@@ -73,6 +74,7 @@ public:
     void loadParty(const std::string &entry = "", bool fromSave = false);
     void runOnLoadScript();
     void runOnStartScript();
+    void runOnClientEnterScript();
 
     bool handle(const input::Event &event);
     void update(float dt);

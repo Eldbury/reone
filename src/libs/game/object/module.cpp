@@ -111,6 +111,7 @@ void Module::loadInfo(const resource::generated::IFO &ifo) {
 
     _info.onModLoad = boost::to_lower_copy(ifo.Mod_OnModLoad);
     _info.onModStart = boost::to_lower_copy(ifo.Mod_OnModStart);
+    _info.onClientEnter = boost::to_lower_copy(ifo.Mod_OnClientEntr);
 }
 
 void Module::loadArea(const resource::generated::IFO &ifo, bool fromSave) {
@@ -145,6 +146,7 @@ void Module::loadParty(const std::string &entry, bool fromSave) {
     _area->update3rdPersonCameraFacing();
 
     if (!fromSave) {
+        runOnClientEnterScript();
         _area->runOnEnterScript();
     }
 }
@@ -161,6 +163,20 @@ void Module::runOnStartScript() {
         return;
     }
     _game.scriptRunner().run(_info.onModStart, id());
+}
+
+void Module::runOnClientEnterScript() {
+    if (_info.onClientEnter.empty()) {
+        return;
+    }
+    auto player = _game.party().player();
+    if (!player) {
+        return;
+    }
+    _game.scriptRunner().run(
+        _info.onClientEnter,
+        {{script::ArgKind::Caller, script::Variable::ofObject(id())},
+         {script::ArgKind::EnteringObject, script::Variable::ofObject(player->id())}});
 }
 
 void Module::getEntryPoint(const std::string &waypoint, glm::vec3 &position, float &facing) const {
