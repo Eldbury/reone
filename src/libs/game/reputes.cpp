@@ -29,15 +29,19 @@ namespace reone {
 namespace game {
 
 static constexpr int kDefaultRepute = 50;
+static constexpr int kMinRepute = 0;
+static constexpr int kMaxRepute = 100;
+static constexpr int kEnemyReputeMax = 10;
+static constexpr int kFriendReputeMin = 90;
 
 void Reputes::init() {
+    _factionLabels.clear();
+    _factionValues.clear();
+
     std::shared_ptr<TwoDA> repute(_twoDas.get("repute"));
     if (!repute) {
         return;
     }
-
-    _factionLabels.clear();
-    _factionValues.clear();
 
     for (int row = 0; row < repute->getRowCount(); ++row) {
         _factionLabels.push_back(boost::to_lower_copy(repute->getString(row, "label")));
@@ -46,46 +50,55 @@ void Reputes::init() {
     for (int row = 0; row < repute->getRowCount(); ++row) {
         std::vector<int> values;
         for (size_t i = 0; i < _factionLabels.size(); ++i) {
-            int value;
-
             const std::string &label = _factionLabels[i];
-            if (label == "player" || label == "glb_xor") {
-                value = kDefaultRepute;
-            } else {
-                value = repute->getInt(row, _factionLabels[i], kDefaultRepute);
-            }
-
-            values.push_back(value);
+            values.push_back(repute->getInt(row, label, kDefaultRepute));
         }
         _factionValues.push_back(std::move(values));
     }
 }
 
-bool Reputes::getIsEnemy(const Creature &left, const Creature &right) const {
-    return getIsEnemy(left.faction(), right.faction());
-}
+int Reputes::getReputation(Faction sourceFaction, Faction targetFaction) const {
+    int source = static_cast<int>(sourceFaction);
+    int target = static_cast<int>(targetFaction);
 
-bool Reputes::getIsEnemy(Faction left, Faction right) const {
-    return getRepute(left, right) < 50;
-}
-
-bool Reputes::getIsFriend(const Creature &left, const Creature &right) const {
-    return getRepute(left.faction(), right.faction()) > 50;
-}
-
-bool Reputes::getIsNeutral(const Creature &left, const Creature &right) const {
-    return getRepute(left.faction(), right.faction()) == 50;
-}
-
-int Reputes::getRepute(Faction left, Faction right) const {
-    int leftFaction = static_cast<int>(left);
-    int rightFaction = static_cast<int>(right);
-
-    if (leftFaction < 0 || leftFaction >= _factionValues.size() ||
-        rightFaction < 0 || rightFaction >= _factionValues[leftFaction].size())
+    if (source < 0 || source >= static_cast<int>(_factionValues.size()) ||
+        target < 0 || target >= static_cast<int>(_factionValues[source].size())) {
         return kDefaultRepute;
+    }
 
-    return _factionValues[leftFaction][rightFaction];
+    return _factionValues[source][target];
+}
+
+void Reputes::adjustReputation(Faction sourceFaction, Faction targetFaction, int adjustment) {
+    int source = static_cast<int>(sourceFaction);
+    int target = static_cast<int>(targetFaction);
+
+    if (source <= 0 || source >= static_cast<int>(_factionValues.size()) ||
+        target < 0 || target >= static_cast<int>(_factionValues[source].size()) ||
+        source == target) {
+        return;
+    }
+
+    int64_t adjusted = static_cast<int64_t>(_factionValues[source][target]) + adjustment;
+    _factionValues[source][target] = static_cast<int>(
+        std::clamp(adjusted, static_cast<int64_t>(kMinRepute), static_cast<int64_t>(kMaxRepute)));
+}
+
+bool Reputes::getIsEnemy(const Creature &source, const Creature &target) const {
+    return getIsEnemy(source.faction(), target.faction());
+}
+
+bool Reputes::getIsEnemy(Faction sourceFaction, Faction targetFaction) const {
+    return getReputation(sourceFaction, targetFaction) <= kEnemyReputeMax;
+}
+
+bool Reputes::getIsFriend(const Creature &source, const Creature &target) const {
+    return getReputation(source.faction(), target.faction()) >= kFriendReputeMin;
+}
+
+bool Reputes::getIsNeutral(const Creature &source, const Creature &target) const {
+    int reputation = getReputation(source.faction(), target.faction());
+    return reputation > kEnemyReputeMax && reputation < kFriendReputeMin;
 }
 
 } // namespace game

@@ -45,6 +45,8 @@ public:
 
     void deserialize(const resource::Gff &gff);
 
+    Faction faction() const { return _faction; }
+
 private:
     struct SpawnPoint {
         glm::vec3 position {0.0f};

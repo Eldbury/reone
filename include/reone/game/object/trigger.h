@@ -77,6 +77,7 @@ public:
     const std::vector<glm::vec3> &geometry() const { return _geometry; }
     DebugState debugState() const;
     glm::vec4 debugColor() const;
+    Faction faction() const { return _faction; }
 
     void markDebugTested(bool inside);
     void markDebugEntered();

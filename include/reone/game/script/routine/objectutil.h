@@ -15,6 +15,10 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#pragma once
+
+#include <optional>
+
 #include "reone/script/types.h"
 
 #include "../../object.h"
@@ -26,6 +30,8 @@ namespace game {
 inline uint32_t getObjectIdOrInvalid(const std::shared_ptr<Object> &object) {
     return object ? object->id() : script::kObjectInvalid;
 }
+
+std::optional<Faction> getFaction(const Object &object);
 
 } // namespace game
 

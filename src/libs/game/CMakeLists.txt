@@ -532,6 +532,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/reputes.cpp
     ${GAME_SOURCE_DIR}/room.cpp
     ${GAME_SOURCE_DIR}/script/routine/argutil.cpp
+    ${GAME_SOURCE_DIR}/script/routine/objectutil.cpp
     ${GAME_SOURCE_DIR}/script/routine/impl/action.cpp
     ${GAME_SOURCE_DIR}/script/routine/impl/effect.cpp
     ${GAME_SOURCE_DIR}/script/routine/impl/main.cpp

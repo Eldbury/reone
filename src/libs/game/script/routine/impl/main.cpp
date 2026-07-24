@@ -2096,14 +2096,33 @@ static Variable GetReputation(const std::vector<Variable> &args, const RoutineCo
 
 static Variable AdjustReputation(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Load
-    auto oTarget = getObject(args, 0, ctx);
-    auto oSourceFactionMember = getObject(args, 1, ctx);
+    auto oTarget = getObjectOrNull(args, 0, ctx);
+    auto oSourceFactionMember = getObjectOrNull(args, 1, ctx);
     auto nAdjustment = getInt(args, 2);
 
     // Transform
+    if (!oTarget || !oSourceFactionMember) {
+        return Variable::ofNull();
+    }
+    auto target = dyn_cast<Creature>(oTarget);
+    if (!target) {
+        return Variable::ofNull();
+    }
+    if (auto sourceCreature = dyn_cast<Creature>(oSourceFactionMember);
+        sourceCreature && sourceCreature->plotFlag()) {
+        return Variable::ofNull();
+    }
+    auto sourceFaction = getFaction(*oSourceFactionMember);
+    if (!sourceFaction || *sourceFaction == target->faction()) {
+        return Variable::ofNull();
+    }
 
     // Execute
-    throw RoutineNotImplementedException("AdjustReputation");
+    ctx.services.game.reputes.adjustReputation(
+        *sourceFaction,
+        target->faction(),
+        nAdjustment);
+    return Variable::ofNull();
 }
 
 static Variable GetModuleFileName(const std::vector<Variable> &args, const RoutineContext &ctx) {

@@ -118,15 +118,29 @@ std::shared_ptr<TwoDA> makeAppearanceTable() {
     return std::shared_ptr<TwoDA>(builder.build());
 }
 
-std::shared_ptr<TwoDA> makeReputeTable() {
+std::shared_ptr<TwoDA> makeReputeTable(int friendly1ToHostile1 = 0) {
     TwoDA::Builder builder;
-    builder.columns({"label", "hostile_1", "friendly_1", "hostile_2", "friendly_2", "neutral"});
-    builder.row({"Player", "0", "100", "0", "100", "50"});
-    builder.row({"Hostile_1", "100", "0", "0", "0", "50"});
-    builder.row({"Friendly_1", "0", "100", "0", "0", "50"});
-    builder.row({"Hostile_2", "0", "0", "100", "0", "50"});
-    builder.row({"Friendly_2", "0", "0", "0", "100", "50"});
-    builder.row({"Neutral", "50", "50", "50", "50", "100"});
+    builder.columns(
+        {"label", "player", "hostile_1", "friendly_1", "hostile_2", "friendly_2",
+         "neutral", "insane", "tuskan", "glb_xor"});
+    builder.row({"Player", "100", "0", "100", "0", "100", "50", "50", "50", "50"});
+    builder.row({"Hostile_1", "50", "100", "0", "0", "0", "50", "50", "50", "50"});
+    builder.row(
+        {"Friendly_1", "50", std::to_string(friendly1ToHostile1), "100", "0", "0",
+         "50", "50", "50", "50"});
+    builder.row({"Hostile_2", "50", "0", "0", "100", "0", "50", "50", "50", "50"});
+    builder.row({"Friendly_2", "50", "0", "0", "0", "100", "50", "50", "50", "50"});
+    builder.row({"Neutral", "50", "50", "50", "50", "50", "100", "50", "50", "50"});
+    builder.row({"Insane", "50", "50", "50", "50", "50", "50", "100", "50", "50"});
+    builder.row({"Tuskan", "50", "50", "50", "50", "50", "50", "50", "100", "50"});
+    builder.row({"Glb_Xor", "50", "50", "50", "50", "50", "50", "50", "50", "100"});
+    return std::shared_ptr<TwoDA>(builder.build());
+}
+
+std::shared_ptr<TwoDA> makePlaceablesTable() {
+    TwoDA::Builder builder;
+    builder.columns({"modelname"});
+    builder.row({""});
     return std::shared_ptr<TwoDA>(builder.build());
 }
 
@@ -1509,4 +1523,358 @@ TEST(Reputes, should_use_authored_creature_faction_dispositions) {
     EXPECT_FALSE(reputes.getIsEnemy(*neutral, *friendly1));
     EXPECT_TRUE(reputes.getIsNeutral(*friendly1, *neutral));
     EXPECT_TRUE(reputes.getIsNeutral(*neutral, *friendly1));
+}
+
+TEST(Reputes, adjustment_is_directed_and_shared_by_the_faction_pair) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    NiceMock<MockTwoDAs> twoDas;
+    ON_CALL(twoDas, get("repute")).WillByDefault(Return(makeReputeTable(100)));
+    Reputes reputes(twoDas);
+    reputes.init();
+
+    auto source = game.newCreature();
+    source->setFaction(Faction::Hostile1);
+    auto target = game.newCreature();
+    target->setFaction(Faction::Friendly1);
+    auto otherSource = game.newCreature();
+    otherSource->setFaction(Faction::Hostile1);
+    auto otherTarget = game.newCreature();
+    otherTarget->setFaction(Faction::Friendly1);
+
+    ASSERT_EQ(0, reputes.getReputation(Faction::Hostile1, Faction::Friendly1));
+    ASSERT_EQ(100, reputes.getReputation(Faction::Friendly1, Faction::Hostile1));
+
+    reputes.adjustReputation(source->faction(), target->faction(), 20);
+
+    EXPECT_EQ(20, reputes.getReputation(Faction::Hostile1, Faction::Friendly1));
+    EXPECT_EQ(100, reputes.getReputation(Faction::Friendly1, Faction::Hostile1));
+    EXPECT_TRUE(reputes.getIsNeutral(*otherSource, *otherTarget));
+    EXPECT_TRUE(reputes.getIsFriend(*otherTarget, *otherSource));
+}
+
+TEST(Reputes, repeated_adjustments_accumulate_and_clamp) {
+    NiceMock<MockTwoDAs> twoDas;
+    ON_CALL(twoDas, get("repute")).WillByDefault(Return(makeReputeTable()));
+    Reputes reputes(twoDas);
+    reputes.init();
+
+    reputes.adjustReputation(Faction::Hostile1, Faction::Friendly1, 7);
+    reputes.adjustReputation(Faction::Hostile1, Faction::Friendly1, 8);
+    EXPECT_EQ(15, reputes.getReputation(Faction::Hostile1, Faction::Friendly1));
+
+    reputes.adjustReputation(
+        Faction::Hostile1,
+        Faction::Friendly1,
+        std::numeric_limits<int>::max());
+    EXPECT_EQ(100, reputes.getReputation(Faction::Hostile1, Faction::Friendly1));
+
+    reputes.adjustReputation(
+        Faction::Hostile1,
+        Faction::Friendly1,
+        std::numeric_limits<int>::min());
+    EXPECT_EQ(0, reputes.getReputation(Faction::Hostile1, Faction::Friendly1));
+}
+
+TEST(Reputes, invalid_source_target_and_identical_factions_do_not_mutate_the_matrix) {
+    NiceMock<MockTwoDAs> twoDas;
+    ON_CALL(twoDas, get("repute")).WillByDefault(Return(makeReputeTable()));
+    Reputes reputes(twoDas);
+    reputes.init();
+
+    const auto playerFaction = static_cast<Faction>(0);
+    const auto outOfRangeFaction = static_cast<Faction>(99);
+    int playerToHostile = reputes.getReputation(playerFaction, Faction::Hostile1);
+    int hostileToFriendly = reputes.getReputation(Faction::Hostile1, Faction::Friendly1);
+    int hostileToSelf = reputes.getReputation(Faction::Hostile1, Faction::Hostile1);
+
+    reputes.adjustReputation(playerFaction, Faction::Hostile1, 100);
+    reputes.adjustReputation(Faction::Invalid, Faction::Friendly1, 100);
+    reputes.adjustReputation(outOfRangeFaction, Faction::Friendly1, 100);
+    reputes.adjustReputation(Faction::Hostile1, Faction::Invalid, 100);
+    reputes.adjustReputation(Faction::Hostile1, outOfRangeFaction, 100);
+    reputes.adjustReputation(Faction::Hostile1, Faction::Hostile1, -100);
+
+    EXPECT_EQ(playerToHostile, reputes.getReputation(playerFaction, Faction::Hostile1));
+    EXPECT_EQ(hostileToFriendly, reputes.getReputation(Faction::Hostile1, Faction::Friendly1));
+    EXPECT_EQ(hostileToSelf, reputes.getReputation(Faction::Hostile1, Faction::Hostile1));
+    EXPECT_EQ(50, reputes.getReputation(Faction::Invalid, Faction::Friendly1));
+    EXPECT_EQ(50, reputes.getReputation(Faction::Hostile1, outOfRangeFaction));
+}
+
+TEST(Reputes, player_is_a_valid_target_and_init_restores_authored_values) {
+    NiceMock<MockTwoDAs> twoDas;
+    ON_CALL(twoDas, get("repute")).WillByDefault(Return(makeReputeTable()));
+    Reputes reputes(twoDas);
+    reputes.init();
+    const auto playerFaction = static_cast<Faction>(0);
+
+    ASSERT_EQ(50, reputes.getReputation(Faction::GlobalXor, playerFaction));
+    reputes.adjustReputation(Faction::GlobalXor, playerFaction, -100);
+    ASSERT_EQ(0, reputes.getReputation(Faction::GlobalXor, playerFaction));
+    EXPECT_TRUE(reputes.getIsEnemy(Faction::GlobalXor, playerFaction));
+
+    reputes.init();
+
+    EXPECT_EQ(50, reputes.getReputation(Faction::GlobalXor, playerFaction));
+}
+
+TEST(Reputes, disposition_queries_use_k1_boundaries) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    NiceMock<MockTwoDAs> twoDas;
+    ON_CALL(twoDas, get("repute")).WillByDefault(Return(makeReputeTable()));
+    Reputes reputes(twoDas);
+    reputes.init();
+    auto source = game.newCreature();
+    source->setFaction(Faction::Hostile1);
+    auto target = game.newCreature();
+    target->setFaction(Faction::Friendly1);
+
+    reputes.adjustReputation(Faction::Hostile1, Faction::Friendly1, 10);
+    EXPECT_TRUE(reputes.getIsEnemy(*source, *target));
+    EXPECT_FALSE(reputes.getIsNeutral(*source, *target));
+    EXPECT_FALSE(reputes.getIsFriend(*source, *target));
+
+    reputes.adjustReputation(Faction::Hostile1, Faction::Friendly1, 1);
+    EXPECT_FALSE(reputes.getIsEnemy(*source, *target));
+    EXPECT_TRUE(reputes.getIsNeutral(*source, *target));
+    EXPECT_FALSE(reputes.getIsFriend(*source, *target));
+
+    reputes.adjustReputation(Faction::Hostile1, Faction::Friendly1, 78);
+    EXPECT_FALSE(reputes.getIsEnemy(*source, *target));
+    EXPECT_TRUE(reputes.getIsNeutral(*source, *target));
+    EXPECT_FALSE(reputes.getIsFriend(*source, *target));
+
+    reputes.adjustReputation(Faction::Hostile1, Faction::Friendly1, 1);
+    EXPECT_FALSE(reputes.getIsEnemy(*source, *target));
+    EXPECT_FALSE(reputes.getIsNeutral(*source, *target));
+    EXPECT_TRUE(reputes.getIsFriend(*source, *target));
+}
+
+TEST(AdjustReputationRoutine, creature_source_adjusts_source_toward_target_without_changing_factions) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    auto target = game.newCreature();
+    target->setFaction(static_cast<Faction>(0));
+    auto source = game.newCreature();
+    source->setFaction(Faction::GlobalXor);
+    auto &reputes = static_cast<MockReputes &>(engine.services().game.reputes);
+    EXPECT_CALL(reputes, adjustReputation(Faction::GlobalXor, static_cast<Faction>(0), -100));
+    Routines routines(GameID::KotOR, &game, &engine.services());
+    routines.init();
+    script::ExecutionContext execution;
+
+    routines.get(209).invoke(
+        {script::Variable::ofObject(target->id()),
+         script::Variable::ofObject(source->id()),
+         script::Variable::ofInt(-100)},
+        execution);
+
+    EXPECT_EQ(static_cast<Faction>(0), target->faction());
+    EXPECT_EQ(Faction::GlobalXor, source->faction());
+}
+
+TEST(AdjustReputationRoutine, plot_creature_source_does_nothing) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    auto target = game.newCreature();
+    target->setFaction(Faction::Friendly1);
+    auto source = game.newCreature();
+    source->setFaction(Faction::Hostile1);
+    source->setPlotFlag(true);
+    auto &reputes = static_cast<MockReputes &>(engine.services().game.reputes);
+    EXPECT_CALL(reputes, adjustReputation(_, _, _)).Times(0);
+    Routines routines(GameID::KotOR, &game, &engine.services());
+    routines.init();
+    script::ExecutionContext execution;
+
+    routines.get(209).invoke(
+        {script::Variable::ofObject(target->id()),
+         script::Variable::ofObject(source->id()),
+         script::Variable::ofInt(-10)},
+        execution);
+}
+
+TEST(AdjustReputationRoutine, dead_creature_target_remains_eligible) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    auto target = game.newCreature();
+    target->setFaction(Faction::Friendly1);
+    EXPECT_CALL(engine.resourceModule().strings(), getText(_))
+        .Times(AnyNumber());
+    target->damage(std::numeric_limits<int>::max(), script::kObjectInvalid);
+    ASSERT_TRUE(target->isDead());
+    auto source = game.newCreature();
+    source->setFaction(Faction::Hostile1);
+    auto &reputes = static_cast<MockReputes &>(engine.services().game.reputes);
+    EXPECT_CALL(reputes, adjustReputation(Faction::Hostile1, Faction::Friendly1, -10));
+    Routines routines(GameID::KotOR, &game, &engine.services());
+    routines.init();
+    script::ExecutionContext execution;
+
+    routines.get(209).invoke(
+        {script::Variable::ofObject(target->id()),
+         script::Variable::ofObject(source->id()),
+         script::Variable::ofInt(-10)},
+        execution);
+}
+
+TEST(AdjustReputationRoutine, supported_non_creature_sources_use_their_loaded_factions) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    testSceneGraph(engine);
+    EXPECT_CALL(engine.resourceModule().twoDas(), get("genericdoors"))
+        .Times(AnyNumber())
+        .WillRepeatedly(Return(makeGenericDoorsTable()));
+    EXPECT_CALL(engine.resourceModule().twoDas(), get("placeables"))
+        .Times(AnyNumber())
+        .WillRepeatedly(Return(makePlaceablesTable()));
+    EXPECT_CALL(engine.resourceModule().models(), get(_))
+        .Times(AnyNumber());
+    EXPECT_CALL(engine.resourceModule().walkmeshes(), get(_, _))
+        .Times(AnyNumber());
+    auto target = game.newCreature();
+    target->setFaction(Faction::Friendly1);
+    auto doorGff = Gff::Builder()
+                       .field(Gff::Field::newByte(
+                           "Faction",
+                           static_cast<uint8_t>(Faction::Hostile1)))
+                       .field(Gff::Field::newByte("Plot", 1))
+                       .build();
+    auto door = game.newDoor();
+    door->deserialize(*doorGff);
+    auto encounterGff = Gff::Builder()
+                            .field(Gff::Field::newByte(
+                                "Faction",
+                                static_cast<uint8_t>(Faction::Hostile2)))
+                            .build();
+    auto encounter = game.newEncounter();
+    encounter->deserialize(*encounterGff);
+    auto placeableGff = Gff::Builder()
+                            .field(Gff::Field::newByte(
+                                "Faction",
+                                static_cast<uint8_t>(Faction::Neutral)))
+                            .build();
+    auto placeable = game.newPlaceable();
+    placeable->deserialize(*placeableGff);
+    auto triggerGff = Gff::Builder()
+                          .field(Gff::Field::newByte(
+                              "Faction",
+                              static_cast<uint8_t>(Faction::Friendly2)))
+                          .build();
+    auto trigger = game.newTrigger();
+    trigger->deserialize(*triggerGff);
+    auto &reputes = static_cast<MockReputes &>(engine.services().game.reputes);
+    EXPECT_CALL(reputes, adjustReputation(Faction::Hostile1, Faction::Friendly1, 11));
+    EXPECT_CALL(reputes, adjustReputation(Faction::Hostile2, Faction::Friendly1, 12));
+    EXPECT_CALL(reputes, adjustReputation(Faction::Neutral, Faction::Friendly1, 13));
+    EXPECT_CALL(reputes, adjustReputation(Faction::Friendly2, Faction::Friendly1, 14));
+    Routines routines(GameID::KotOR, &game, &engine.services());
+    routines.init();
+    script::ExecutionContext execution;
+
+    routines.get(209).invoke(
+        {script::Variable::ofObject(target->id()),
+         script::Variable::ofObject(door->id()),
+         script::Variable::ofInt(11)},
+        execution);
+    routines.get(209).invoke(
+        {script::Variable::ofObject(target->id()),
+         script::Variable::ofObject(encounter->id()),
+         script::Variable::ofInt(12)},
+        execution);
+    routines.get(209).invoke(
+        {script::Variable::ofObject(target->id()),
+         script::Variable::ofObject(placeable->id()),
+         script::Variable::ofInt(13)},
+        execution);
+    routines.get(209).invoke(
+        {script::Variable::ofObject(target->id()),
+         script::Variable::ofObject(trigger->id()),
+         script::Variable::ofInt(14)},
+        execution);
+}
+
+TEST(AdjustReputationRoutine, unsupported_types_and_non_creature_targets_do_nothing) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    auto creature = game.newCreature();
+    creature->setFaction(Faction::Friendly1);
+    auto item = game.newItem();
+    auto &reputes = static_cast<MockReputes &>(engine.services().game.reputes);
+    EXPECT_CALL(reputes, adjustReputation(_, _, _)).Times(0);
+    Routines routines(GameID::KotOR, &game, &engine.services());
+    routines.init();
+    script::ExecutionContext execution;
+
+    routines.get(209).invoke(
+        {script::Variable::ofObject(creature->id()),
+         script::Variable::ofObject(item->id()),
+         script::Variable::ofInt(10)},
+        execution);
+    routines.get(209).invoke(
+        {script::Variable::ofObject(item->id()),
+         script::Variable::ofObject(creature->id()),
+         script::Variable::ofInt(10)},
+        execution);
+}
+
+TEST(AdjustReputationRoutine, invalid_and_stale_ids_do_not_halt_later_invocations) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    auto target = game.newCreature();
+    target->setFaction(Faction::Friendly1);
+    auto source = game.newCreature();
+    source->setFaction(Faction::Hostile1);
+    auto &reputes = static_cast<MockReputes &>(engine.services().game.reputes);
+    EXPECT_CALL(reputes, adjustReputation(Faction::Hostile1, Faction::Friendly1, 3));
+    Routines routines(GameID::KotOR, &game, &engine.services());
+    routines.init();
+    script::ExecutionContext execution;
+
+    routines.get(209).invoke(
+        {script::Variable::ofObject(script::kObjectInvalid),
+         script::Variable::ofObject(source->id()),
+         script::Variable::ofInt(1)},
+        execution);
+    routines.get(209).invoke(
+        {script::Variable::ofObject(target->id()),
+         script::Variable::ofObject(std::numeric_limits<uint32_t>::max() - 1),
+         script::Variable::ofInt(2)},
+        execution);
+    routines.get(209).invoke(
+        {script::Variable::ofObject(target->id()),
+         script::Variable::ofObject(source->id()),
+         script::Variable::ofInt(3)},
+        execution);
+}
+
+TEST(AdjustReputationRoutine, identical_source_and_target_factions_do_nothing) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    auto target = game.newCreature();
+    target->setFaction(Faction::Neutral);
+    auto source = game.newCreature();
+    source->setFaction(Faction::Neutral);
+    auto &reputes = static_cast<MockReputes &>(engine.services().game.reputes);
+    EXPECT_CALL(reputes, adjustReputation(_, _, _)).Times(0);
+    Routines routines(GameID::KotOR, &game, &engine.services());
+    routines.init();
+    script::ExecutionContext execution;
+
+    routines.get(209).invoke(
+        {script::Variable::ofObject(target->id()),
+         script::Variable::ofObject(source->id()),
+         script::Variable::ofInt(-50)},
+        execution);
 }
