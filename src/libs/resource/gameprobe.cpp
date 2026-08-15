@@ -36,6 +36,19 @@ GameID GameProbe::probe() {
         return GameID::TSL;
     }
 
+    auto keyPath = findFileIgnoreCase(_gamePath, "chitin.key");
+    auto dialogPath = findFileIgnoreCase(_gamePath, "dialog.tlk");
+    if (keyPath && dialogPath) {
+        auto iniPathK1 = findFileIgnoreCase(_gamePath, "swkotor.ini");
+        auto iniPathK2 = findFileIgnoreCase(_gamePath, "swkotor2.ini");
+        if (iniPathK1 && !iniPathK2) {
+            return GameID::KotOR;
+        }
+        if (iniPathK2 && !iniPathK1) {
+            return GameID::TSL;
+        }
+    }
+
     throw std::runtime_error("Unable to determine game ID: " + _gamePath.string());
 }
 
