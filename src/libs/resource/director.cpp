@@ -128,6 +128,15 @@ void ResourceDirector::onGameLoad(const SaveSlotDescriptor &slot) {
     commitSaveSession(buildSaveSession(slot));
 }
 
+std::unique_ptr<SaveSessionState> ResourceDirector::prepareGameLoad(
+    const SaveSlotDescriptor &slot) {
+    return buildSaveSession(slot);
+}
+
+void ResourceDirector::commitGameLoad(std::unique_ptr<SaveSessionState> candidate) {
+    commitSaveSession(std::move(candidate));
+}
+
 void ResourceDirector::commitSaveSession(std::unique_ptr<SaveSessionState> candidate) {
     _resources.clearOwner(ResourceOwner::SaveSlot);
     _saveSession = std::move(candidate);

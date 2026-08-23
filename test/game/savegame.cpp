@@ -13,6 +13,8 @@
 #include "reone/game/object/creature.h"
 #include "reone/game/object/module.h"
 #include "reone/graphics/format/tgareader.h"
+#include "reone/resource/exception/notfound.h"
+#include "reone/resource/format/gffwriter.h"
 #include "reone/resource/saveworkingstate.h"
 #include "reone/system/stream/memoryinput.h"
 
@@ -741,3 +743,172 @@ TEST(SaveSessionState, unsaved_session_has_real_empty_committed_state_and_no_slo
 }
 
 } // namespace
+
+namespace {
+
+/// Installation holding one structurally complete save slot on disk.
+struct LoadTransactionFixture : Test {
+    test::TmpDir root {"reone_e3g_load_transaction"};
+    TestEngine engine;
+    NiceMock<scene::MockSceneGraph> sceneGraph;
+    StubConsole console;
+    std::unique_ptr<Game> game;
+    std::shared_ptr<Area> area;
+    std::shared_ptr<Creature> player;
+    std::vector<Portrait> portraitRows;
+    SaveSlotDescriptor slot;
+
+    void SetUp() override {
+        engine.init();
+        ON_CALL(engine.sceneModule().graphs(), get(_))
+            .WillByDefault(ReturnRef(sceneGraph));
+        portraitRows.push_back({"po_live_player", 0, -1, -1, true, 0});
+        EXPECT_CALL(engine.gameModule().portraits(), portraits())
+            .Times(AnyNumber())
+            .WillRepeatedly(ReturnRef(portraitRows));
+
+        game = std::make_unique<Game>(
+            GameID::KotOR, root.path, engine.options(), engine.services(), console);
+        area = game->newArea();
+        player = game->newCreature();
+        TestGameModule::configureModuleSnapshot(
+            *game, area, player, "module_a", "module_a");
+
+        // The engine has to be somewhere recognisable for "the screen did not
+        // change" to mean anything.
+        TestGameModule::setCurrentScreen(
+            *game, static_cast<int>(Game::Screen::InGame));
+
+        auto directory = root.path / "saves" / "000002 - Game1";
+        std::filesystem::create_directories(directory);
+        test::writeErf(directory / "SAVEGAME.sav", ErfWriter::FileType::ERF, {});
+        slot = SaveSlotDescriptor {directory, directory / "SAVEGAME.sav"};
+    }
+};
+
+} // namespace
+
+TEST_F(LoadTransactionFixture, aPreCommitFailureLeavesTheRunningSessionAuthoritative) {
+    // given a load whose candidate cannot even be opened
+    auto &director = engine.resourceModule().director();
+    EXPECT_CALL(director, prepareGameLoad(_))
+        .WillOnce(Throw(ResourceNotFoundException("Save directory not found")));
+
+    // nothing may be committed or retired on the way out
+    EXPECT_CALL(director, commitGameLoad(_)).Times(0);
+    EXPECT_CALL(director, onNewGame()).Times(0);
+    EXPECT_CALL(director, onModuleLoad(_)).Times(0);
+
+    auto generation = TestGameModule::runtimeSessionGeneration(*game);
+    auto *modulePtr = game->module().get();
+    auto *playerPtr = game->party().player().get();
+    auto screen = game->currentScreen();
+
+    // when
+    EXPECT_THROW(game->loadGame(slot), ResourceNotFoundException);
+
+    // then the session the player was in is still the one that is running
+    EXPECT_EQ(generation, TestGameModule::runtimeSessionGeneration(*game));
+    EXPECT_EQ(modulePtr, game->module().get());
+    EXPECT_EQ(playerPtr, game->party().player().get());
+    EXPECT_EQ(screen, game->currentScreen());
+    EXPECT_NE(Game::Screen::None, game->currentScreen());
+}
+
+TEST_F(LoadTransactionFixture, aMissingRequiredSaveRecordFailsBeforeTheCommitBoundary) {
+    // given a slot whose archive opens but which carries no savenfo.res.
+    // Validating it only after the reset is what used to strand the engine.
+    auto &director = engine.resourceModule().director();
+    EXPECT_CALL(director, prepareGameLoad(_))
+        .WillOnce(Invoke([this](const SaveSlotDescriptor &descriptor) {
+            return std::make_unique<SaveSessionState>(descriptor);
+        }));
+    EXPECT_CALL(director, commitGameLoad(_)).Times(0);
+    EXPECT_CALL(director, onNewGame()).Times(0);
+
+    auto generation = TestGameModule::runtimeSessionGeneration(*game);
+    auto *modulePtr = game->module().get();
+
+    // when
+    EXPECT_THROW(game->loadGame(slot), ResourceNotFoundException);
+
+    // then
+    EXPECT_EQ(generation, TestGameModule::runtimeSessionGeneration(*game));
+    EXPECT_EQ(modulePtr, game->module().get());
+}
+
+TEST_F(LoadTransactionFixture, preparationConsumesTheDiscoveredDescriptorVerbatim) {
+    // given the slot discovered by indexing. Reducing it to a name here would
+    // let the loader resolve a different directory than the list offered.
+    auto &director = engine.resourceModule().director();
+    std::filesystem::path seen;
+    EXPECT_CALL(director, prepareGameLoad(_))
+        .WillOnce(Invoke([&](const SaveSlotDescriptor &descriptor) {
+            seen = descriptor.directory;
+            throw ResourceNotFoundException("stop after capturing identity");
+            return std::unique_ptr<SaveSessionState>();
+        }));
+    EXPECT_CALL(director, onGameLoad(An<std::string_view>())).Times(0);
+
+    // when
+    EXPECT_THROW(game->loadGame(slot), ResourceNotFoundException);
+
+    // then
+    EXPECT_EQ(slot.directory, seen);
+}
+
+TEST_F(LoadTransactionFixture, aFailedLoadDoesNotPreventALaterOne) {
+    // given one rejected candidate followed by another attempt
+    auto &director = engine.resourceModule().director();
+    EXPECT_CALL(director, prepareGameLoad(_))
+        .WillOnce(Throw(ResourceNotFoundException("Save directory not found")))
+        .WillOnce(Throw(ResourceNotFoundException("Save directory not found")));
+
+    EXPECT_THROW(game->loadGame(slot), ResourceNotFoundException);
+
+    // when the player tries again
+    // then the second attempt still reaches preparation rather than finding a
+    // half-dismantled engine
+    EXPECT_THROW(game->loadGame(slot), ResourceNotFoundException);
+    EXPECT_EQ("module_a", game->module()->name());
+}
+
+TEST_F(LoadTransactionFixture, aPostCommitFailureLandsOnADeliberateScreen) {
+    // given a candidate good enough to commit, which then fails while the
+    // destination module is being mounted. The previous session is already
+    // gone at that point and cannot be brought back, so the only question is
+    // whether the engine ends up somewhere intentional.
+    auto nfo = Gff::Builder()
+                   .field(Gff::Field::newCExoString("LASTMODULE", "module_b"))
+                   .field(Gff::Field::newCExoString("AREANAME", "module_b"))
+                   .build();
+    auto nfoBytes = GffWriter(GffFileFormat::v32("NFO "), *nfo).toBytes();
+    std::ofstream nfoFile(slot.directory / "savenfo.res", std::ios::binary);
+    nfoFile.write(nfoBytes.data(), static_cast<std::streamsize>(nfoBytes.size()));
+    nfoFile.close();
+
+    auto globals = Gff::Builder().build();
+    auto globalBytes = GffWriter(GffFileFormat::v32("GVT "), *globals).toBytes();
+    std::ofstream globalFile(slot.directory / "globalvars.res", std::ios::binary);
+    globalFile.write(globalBytes.data(), static_cast<std::streamsize>(globalBytes.size()));
+    globalFile.close();
+
+    auto &director = engine.resourceModule().director();
+    EXPECT_CALL(director, prepareGameLoad(_))
+        .WillOnce(Invoke([](const SaveSlotDescriptor &descriptor) {
+            return std::make_unique<SaveSessionState>(descriptor);
+        }));
+    EXPECT_CALL(director, commitGameLoad(_)).Times(1);
+    EXPECT_CALL(director, onModuleLoad(_))
+        .WillRepeatedly(Throw(ResourceNotFoundException("module not found")));
+
+    // when the failure lands after the commit boundary
+    EXPECT_NO_THROW(game->loadGame(slot));
+
+    // then nothing of either session is left half-built, and the engine is not
+    // sitting on the blank screen an abandoned session renders as
+    EXPECT_EQ(Game::Screen::MainMenu, game->currentScreen());
+    EXPECT_NE(Game::Screen::None, game->currentScreen());
+    EXPECT_FALSE(game->module());
+    EXPECT_FALSE(game->hasPlayableRuntimeSession());
+}
