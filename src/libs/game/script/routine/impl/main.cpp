@@ -6974,9 +6974,45 @@ static Variable RemoveNPCFromPartyToBase(const std::vector<Variable> &args, cons
     auto nNPC = getInt(args, 0);
 
     // Transform
+    if (nNPC < 0 || nNPC >= static_cast<int>(Party::kK2NpcCount)) {
+        return Variable::ofInt(0);
+    }
 
     // Execute
-    throw RoutineNotImplementedException("RemoveNPCFromPartyToBase");
+    Party &party = ctx.game.party();
+    if (!party.isMemberAvailable(nNPC)) {
+        return Variable::ofInt(0);
+    }
+
+    auto creature = party.getMemberByNPC(nNPC);
+    if (!creature) {
+        creature = party.getAvailableMember(nNPC);
+    }
+
+    auto module = ctx.game.module();
+    auto area = module ? module->area() : nullptr;
+    bool spawned = false;
+    if (creature && area) {
+        for (const auto &object : area->objects()) {
+            if (object == creature) {
+                spawned = true;
+                break;
+            }
+        }
+    }
+
+    party.removeMember(nNPC);
+    if (!spawned) {
+        return Variable::ofInt(0);
+    }
+
+    // Retail saves the roster state and destroys the active runtime creature.
+    // Reone keeps the roster creature itself, so explicitly retire the
+    // area-bound action and navigation state before it can be spawned again.
+    creature->clearAllActions(/*force=*/true);
+    creature->clearPath();
+    area->unloadPartyMember(creature);
+    return Variable::ofInt(1);
 }
 
 static Variable CreatureFlourishWeapon(const std::vector<Variable> &args, const RoutineContext &ctx) {
