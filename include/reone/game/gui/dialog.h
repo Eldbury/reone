@@ -41,8 +41,6 @@ public:
 
     ~DialogGUI() override;
 
-    void update(float dt) override;
-
     /** Selects, but does not activate, a reply for a scripted visual capture. */
     void selectReplyForCapture(int index);
 
@@ -94,6 +92,7 @@ private:
     void repositionMessage();
 
     void updateCamera();
+    void refreshCameraPose() override;
     void updateParticipantAnimations();
     void applyCutAnimation(const std::string &participant, const CutAnimation &cut);
     void applyDialogAnimation(const std::string &participant, int ordinal);

@@ -150,6 +150,10 @@ void SceneGraph::removeRoot(SoundSceneNode &node) {
 }
 
 void SceneGraph::update(float dt) {
+    update(dt, {});
+}
+
+void SceneGraph::update(float dt, const std::function<void()> &afterAnimation) {
     if (_updateRoots) {
         for (auto &root : _modelRoots) {
             root->update(dt);
@@ -160,6 +164,9 @@ void SceneGraph::update(float dt) {
         for (auto &root : _soundRoots) {
             root->update(dt);
         }
+    }
+    if (afterAnimation) {
+        afterAnimation();
     }
     if (!_activeCamera) {
         return;

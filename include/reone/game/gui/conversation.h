@@ -106,6 +106,9 @@ protected:
     virtual bool ownsConversationFlag(const Object &object) const;
     virtual void onLoadEntry();
     virtual void onEntryEnded();
+    // Local pose sampling only; sequencing remains in update(). Called after
+    // world model animation and before the scene consumes the active camera.
+    virtual void refreshCameraPose() {}
 
 private:
     std::shared_ptr<audio::AudioSource> _currentVoice;

@@ -31,6 +31,10 @@ namespace scene {
 class MockSceneGraph : public ISceneGraph, boost::noncopyable {
 public:
     MOCK_METHOD(void, update, (float dt), (override));
+    void update(float dt, const std::function<void()> &afterAnimation) override {
+        update(dt);
+        if (afterAnimation) afterAnimation();
+    }
     MOCK_METHOD(graphics::Texture &, render, (const glm::ivec2 &dim), (override));
 
     MOCK_METHOD(void, clear, (), (override));

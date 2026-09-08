@@ -733,6 +733,86 @@ TEST_P(DialogueCameraSessionTest, session_model_keeps_existing_single_manual_tic
     expectReleased();
 }
 
+TEST_P(DialogueCameraSessionTest, game_pause_freezes_private_camera_with_world_animation) {
+    start(dialogue("paused_camera", true));
+    auto model = graph->cameraModel.lock();
+    ASSERT_TRUE(model);
+    game->setPaused(true);
+    game->update(0.25f);
+    ASSERT_EQ(1u, model->animationChannelCount());
+    EXPECT_FLOAT_EQ(0.0f, model->animationChannels().front().time);
+    game->setPaused(false);
+    game->update(0.25f);
+    EXPECT_FLOAT_EQ(0.25f, model->animationChannels().front().time);
+}
+
+TEST_P(DialogueCameraSessionTest, conversation_pause_holds_progression_without_pausing_model_animation) {
+    start(dialogue("paused_progression", true));
+    dialog->pause();
+    game->update(0.25f);
+    auto model = graph->cameraModel.lock();
+    ASSERT_TRUE(model);
+    EXPECT_FLOAT_EQ(0.25f, model->animationChannels().front().time);
+    EXPECT_EQ(dialog, Access::active(*game));
+}
+
+TEST_P(DialogueCameraSessionTest, replacement_during_gui_update_publishes_and_ticks_only_current_camera) {
+    start(dialogue("old_frame", true));
+    auto oldModel = graph->cameraModel;
+    const auto oldGeneration = Access::generation(*dialog);
+    EXPECT_CALL(*normal, update(0.25f)).WillOnce(Invoke([&](float) {
+        // The old frame's camera must not be advanced before this decision.
+        EXPECT_FLOAT_EQ(0.0f, oldModel.lock()->animationChannels().front().time);
+        start(dialogue("new_frame", true));
+        Access::publish(*dialog, oldGeneration, 12);
+    }));
+    game->update(0.25f);
+    EXPECT_TRUE(oldModel.expired());
+    auto model = graph->cameraModel.lock();
+    ASSERT_TRUE(model);
+    EXPECT_FLOAT_EQ(0.25f, model->animationChannels().front().time);
+    ASSERT_TRUE(graph->camera());
+    EXPECT_EQ(Access::camera(*game)->sceneNode().get(), &graph->camera()->get());
+    EXPECT_EQ(graph->camera()->get().origin(), listener);
+}
+
+TEST_P(DialogueCameraSessionTest, world_attachment_and_private_camera_advance_once_before_listener_publication) {
+    auto hook = cameraResource->getNodeByNameRecursive("camerahook");
+    hook->vectorTracks()[graphics::ControllerTypes::position].add(0, glm::vec3(0));
+    hook->vectorTracks()[graphics::ControllerTypes::position].add(2, glm::vec3(8, 0, 0));
+    auto world = graph->newModel(*cameraResource, scene::ModelUsage::Creature);
+    auto attachment = graph->newModel(*cameraResource, scene::ModelUsage::Creature);
+    world->setCullingEnabled(false);
+    world->attach("camerahook", *attachment);
+    graph->addRoot(world);
+    world->playAnimation("cut001w");
+    attachment->playAnimation("cut001w");
+    start(dialogue("sampled_frame", true));
+    auto cameraModel = graph->cameraModel.lock();
+    ASSERT_TRUE(cameraModel);
+    float expectedTime = 0;
+    EXPECT_CALL(static_cast<audio::MockContext &>(engine.services().audio.context), setListenerPosition(_))
+        .Times(AnyNumber()).WillRepeatedly(Invoke([&](glm::vec3 value) {
+            listener = value;
+            EXPECT_NEAR(expectedTime, world->animationChannels().front().time, 1e-6f);
+            EXPECT_NEAR(expectedTime, attachment->animationChannels().front().time, 1e-6f);
+            EXPECT_NEAR(expectedTime, cameraModel->animationChannels().front().time, 1e-6f);
+        }));
+    for (int frame = 1; frame <= 10; ++frame) {
+        expectedTime = frame * 0.05f;
+        game->update(0.05f);
+        EXPECT_NEAR(3 + 4 * expectedTime, listener.x, 1e-5f);
+        EXPECT_EQ(Access::camera(*game)->sceneNode()->origin(), listener);
+    }
+    game->setPaused(true);
+    game->update(0.5f);
+    EXPECT_NEAR(5.0f, listener.x, 1e-5f);
+    // Tear down captured references before the fixture's normal release path.
+    testing::Mock::VerifyAndClearExpectations(&engine.services().audio.context);
+    world->detach(*attachment);
+    graph->removeRoot(*world);
+}
+
 
 TEST_P(DialogueCameraSessionTest, failed_old_start_cannot_abort_a_replacement_started_by_its_callback) {
     cameraResource = modelResource("authored_camera", true);

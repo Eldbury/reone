@@ -70,6 +70,9 @@ public:
     virtual ~ISceneGraph() = default;
 
     virtual void update(float dt) = 0;
+    // Sample presentation after root animation, before visibility, lighting and
+    // positional sound use the camera. This callback must not advance roots.
+    virtual void update(float dt, const std::function<void()> &afterAnimation) = 0;
     virtual graphics::Texture &render(const glm::ivec2 &dim) = 0;
 
     virtual void clear() = 0;
@@ -158,6 +161,7 @@ public:
     }
 
     void update(float dt) override;
+    void update(float dt, const std::function<void()> &afterAnimation) override;
     graphics::Texture &render(const glm::ivec2 &dim) override;
 
     void renderShadows(IRenderPass &pass);

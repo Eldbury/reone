@@ -1169,6 +1169,7 @@ private:
     void updateMovie(float dt);
     void updateMusic();
     void updateCamera(float dt);
+    void updateDialogueCamera(float dt);
     void updateSceneGraph(float dt);
     void updateImGui(float dt);
 

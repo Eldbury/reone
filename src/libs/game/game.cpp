@@ -3720,18 +3720,9 @@ void Game::updateMovie(float dt) {
 
 void Game::updateCamera(float dt) {
     switch (_screen) {
-    case Screen::Conversation: {
-        int cameraId;
-        if (!_conversation || !_conversation->isCurrentConversation()) {
-            break;
-        }
-        CameraType cameraType = getConversationCamera(cameraId);
-        if (cameraType == CameraType::Static) {
-            _module->area()->setStaticCamera(cameraId);
-        }
-        _cameraType = cameraType;
-        break;
-    }
+    case Screen::Conversation:
+        // Dialogue decisions and actor hooks have not been updated yet.
+        return;
     case Screen::InGame:
         if (_cameraType != CameraType::FirstPerson && _cameraType != CameraType::ThirdPerson) {
             _cameraType = CameraType::ThirdPerson;
@@ -3743,8 +3734,24 @@ void Game::updateCamera(float dt) {
     Camera *camera = getActiveCamera();
     if (camera) {
         camera->update(dt);
+    }
+}
 
-        updateCameraListener(*camera);
+void Game::updateDialogueCamera(float dt) {
+    if (!_conversation || !_conversation->isCurrentConversation()) {
+        return;
+    }
+    int cameraId;
+    auto type = getConversationCamera(cameraId);
+    if (type == CameraType::Static) {
+        _module->area()->setStaticCamera(cameraId);
+    }
+    _cameraType = type;
+    _conversation->refreshCameraPose();
+    if (auto camera = getActiveCamera()) {
+        // The private camera model has one advance, on the world animation
+        // clock. Conversation::pause only holds progression, not animation.
+        camera->update(_paused ? 0.0f : dt);
     }
 }
 
@@ -3762,13 +3769,11 @@ void Game::updateCameraListener(Camera &camera) {
 }
 
 void Game::updateSceneGraph(float dt) {
-    auto camera = getActiveCamera();
-    if (!camera) {
+    if (_screen != Screen::Conversation && !getActiveCamera()) {
         unpublishActiveCamera();
         return;
     }
     auto &sceneGraph = _services.scene.graphs.get(kSceneMain);
-    sceneGraph.setActiveCamera(camera->cameraSceneNode().get());
     sceneGraph.setUpdateRoots(!_paused);
     sceneGraph.setRenderAABB(isShowAABBEnabled());
     sceneGraph.setRenderWalkmeshes(isShowWalkmeshEnabled());
@@ -3777,7 +3782,18 @@ void Game::updateSceneGraph(float dt) {
                                    _developerOverlay.visible &&
                                    _developerOverlay.triggers;
     sceneGraph.setRenderTriggers(isShowTriggersEnabled() || renderDeveloperTriggers);
-    sceneGraph.update(dt);
+    sceneGraph.update(dt, [&] {
+        if (_screen == Screen::Conversation) {
+            updateDialogueCamera(dt);
+        }
+        // Resolve again after dialogue callbacks. Never retain a borrowed
+        // camera across replacement or runtime retirement.
+        auto camera = getActiveCamera();
+        sceneGraph.setActiveCamera(camera ? camera->cameraSceneNode().get() : nullptr);
+        if (camera) {
+            updateCameraListener(*camera);
+        }
+    });
 }
 
 bool Game::getGlobalBoolean(const std::string &name) const {

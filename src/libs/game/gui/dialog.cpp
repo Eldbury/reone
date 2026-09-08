@@ -710,10 +710,8 @@ void DialogGUI::setReplyLines(std::vector<std::string> lines) {
     _controls.LB_REPLIES->protoItem().setExtent(std::move(extent));
 }
 
-void DialogGUI::update(float dt) {
-    const auto generation = conversationGeneration();
-    Conversation::update(dt);
-    if (!isCurrentConversation(generation)) {
+void DialogGUI::refreshCameraPose() {
+    if (!isCurrentConversation()) {
         return;
     }
 
