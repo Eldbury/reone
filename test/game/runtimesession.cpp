@@ -103,10 +103,15 @@ public:
         Conversation(game, services) {
     }
 
-    void bindOwner(std::shared_ptr<Object> owner) {
-        _owner = owner;
-        _dialog = std::make_shared<resource::Dialog>();
-        owner->setIsInConversation(true);
+    void startWithOwner(const std::shared_ptr<Object> &owner) {
+        auto dialog = std::make_shared<resource::Dialog>();
+        dialog->startEntries.push_back({});
+        dialog->entries.resize(1);
+        dialog->entries.front().text = "Active conversation";
+        dialog->entries.front().replies.push_back({});
+        dialog->replies.resize(1);
+        dialog->replies.front().text = "Continue";
+        start(dialog, owner);
     }
 
 protected:
@@ -324,10 +329,6 @@ void reone::game::TestGameModule::markSpawnScriptFired(Creature &creature) {
     creature._spawnScriptFired = true;
 }
 
-void reone::game::TestGameModule::bindConversation(Game &game, Conversation &conversation) {
-    game._conversation = &conversation;
-}
-
 bool reone::game::TestGameModule::hasConversation(const Game &game) {
     return game._conversation != nullptr;
 }
@@ -404,8 +405,7 @@ TEST(RuntimeSession, retirement_unpublishes_conversation_and_gui_object_referenc
 
     auto participant = game.newCreature();
     SessionConversation conversation(game, engine.services());
-    conversation.bindOwner(participant);
-    TestGameModule::bindConversation(game, conversation);
+    conversation.startWithOwner(participant);
     TestGameModule::bindHUDSelection(game, participant);
 
     ASSERT_TRUE(participant->isInConversation());

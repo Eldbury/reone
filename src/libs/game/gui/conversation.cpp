@@ -75,27 +75,77 @@ static std::vector<script::Argument> makeScriptArgs(uint32_t callerId, const Par
     return args;
 }
 
-void Conversation::start(const std::shared_ptr<Dialog> &dialog, const std::shared_ptr<Object> &owner) {
-    if (_dialog) {
-        onFinish();
-        if (auto oldOwner = _owner.resolve()) {
-            oldOwner->setIsInConversation(false);
-        }
-    }
-    debug("Start " + dialog->resRef, LogChannel::Conversation);
+Conversation::~Conversation() {
+    cleanupForDestruction();
+}
 
+bool Conversation::isCurrentConversation() const {
+    return isCurrentConversation(_generation);
+}
+
+bool Conversation::isCurrentConversation(uint64_t generation) const {
+    return generation != 0 && !_finishing && generation == _generation &&
+           _game.isDialogueCameraCurrent(*this, generation);
+}
+
+void Conversation::setCameraModel(uint64_t generation) {
+    if (isCurrentConversation(generation)) {
+        _game.setDialogueCameraModel(*this, generation, _cameraModel);
+    }
+}
+
+void Conversation::playCamera(uint64_t generation, float fovy, int animation) {
+    if (isCurrentConversation(generation)) {
+        _game.playDialogueCamera(*this, generation, fovy, animation);
+    }
+}
+
+void Conversation::start(const std::shared_ptr<Dialog> &dialog, const std::shared_ptr<Object> &owner) {
+    if (!dialog) {
+        throw std::invalid_argument("Cannot start a null conversation");
+    }
+    const auto generation = _game.acquireDialogueCamera(*this);
+    if (!generation) {
+        return;
+    }
+    _generation = generation;
+    _finishing = false;
     _paused = false;
+    _entryEnded = true;
+    _currentEntry = nullptr;
     _dialog = dialog;
     _owner = owner;
-
     if (owner) {
         owner->setIsInConversation(true);
     }
+    debug("Start " + dialog->resRef, LogChannel::Conversation);
 
-    loadConversationBackground();
-    loadCameraModel();
-    onStart();
-    loadStartEntry();
+    try {
+        loadConversationBackground();
+        if (!isCurrentConversation(generation)) {
+            return;
+        }
+        if (!dialog->cameraModel.empty()) {
+            _game.initializeDialogueCamera(*this, generation);
+            if (!isCurrentConversation(generation)) {
+                return;
+            }
+        }
+        loadCameraModel();
+        if (!isCurrentConversation(generation)) {
+            return;
+        }
+        onStart();
+        if (!isCurrentConversation(generation)) {
+            return;
+        }
+        loadStartEntry();
+    } catch (...) {
+        if (_game.ownsDialogueCamera(*this, generation)) {
+            stop(FinishReason::StartupFailure);
+        }
+        throw;
+    }
 }
 
 static BackgroundType getBackgroundType(ComputerType compType) {
@@ -116,8 +166,12 @@ void Conversation::loadConversationBackground() {
 }
 
 void Conversation::loadCameraModel() {
+    const auto generation = _generation;
     std::string modelResRef(_dialog->cameraModel);
-    _cameraModel = modelResRef.empty() ? nullptr : _services.resource.models.get(modelResRef);
+    auto model = modelResRef.empty() ? nullptr : _services.resource.models.get(modelResRef);
+    if (isCurrentConversation(generation)) {
+        _cameraModel = std::move(model);
+    }
 }
 
 void Conversation::setBarkText(std::string text, float duration) {
@@ -128,7 +182,12 @@ void Conversation::onStart() {
 }
 
 void Conversation::loadStartEntry() {
-    int entryIdx = indexOfFirstActive(_dialog->startEntries);
+    const auto generation = _generation;
+    auto dialog = _dialog;
+    int entryIdx = indexOfFirstActive(dialog->startEntries);
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
     if (entryIdx == -1) {
         debug("Finish (no active start entry)", LogChannel::Conversation);
         finish();
@@ -138,8 +197,13 @@ void Conversation::loadStartEntry() {
 }
 
 int Conversation::indexOfFirstActive(const std::vector<Dialog::EntryReplyLink> &links) {
+    const auto generation = _generation;
     for (auto &link : links) {
-        if (isLinkActive(link)) {
+        bool active = isLinkActive(link);
+        if (!isCurrentConversation(generation)) {
+            return -1;
+        }
+        if (active) {
             return link.index;
         }
     }
@@ -147,6 +211,10 @@ int Conversation::indexOfFirstActive(const std::vector<Dialog::EntryReplyLink> &
 }
 
 bool Conversation::isLinkActive(const Dialog::EntryReplyLink &link) {
+    auto caller = _owner.resolve();
+    auto evaluateCondition = [this, &caller](const auto &script, const auto &params) {
+        return _game.scriptRunner().run(script, makeScriptArgs(caller ? caller->id() : 0, params)) != 0;
+    };
     std::optional<bool> active;
     if (!link.active.empty()) {
         active = evaluateCondition(link.active, link.params);
@@ -173,25 +241,12 @@ bool Conversation::isLinkActive(const Dialog::EntryReplyLink &link) {
     return link.logic == 1 ? active.value() || active2.value() : active.value() && active2.value();
 }
 
-bool Conversation::evaluateCondition(const std::string &scriptResRef, const Dialog::EntryReplyLink::ConditionParams &params) {
-    auto owner = _owner.resolve();
-    return _game.scriptRunner().run(
-               scriptResRef,
-               makeScriptArgs(owner ? owner->id() : 0, params)) != 0;
-}
-
-void Conversation::runScript(const std::string &scriptResRef, const Dialog::EntryReply::ActionParams &params) {
-    if (!scriptResRef.empty()) {
-        auto owner = _owner.resolve();
-        _game.scriptRunner().run(
-            scriptResRef,
-            makeScriptArgs(owner ? owner->id() : 0, params));
-    }
-}
-
 void Conversation::runScripts(const Dialog::EntryReply &node) {
-    runScript(node.script, node.actionParams);
-    runScript(node.script2, node.actionParams2);
+    auto caller = _owner.resolve();
+    auto args = makeScriptArgs(caller ? caller->id() : 0, node.actionParams);
+    auto args2 = makeScriptArgs(caller ? caller->id() : 0, node.actionParams2);
+    if (!node.script.empty()) _game.scriptRunner().run(node.script, std::move(args));
+    if (!node.script2.empty()) _game.scriptRunner().run(node.script2, std::move(args2));
 }
 
 void Conversation::applyStatusSummaryEntries(const Dialog::EntryReply &node) {
@@ -202,47 +257,125 @@ void Conversation::applyStatusSummaryEntries(const Dialog::EntryReply &node) {
 }
 
 void Conversation::finish() {
+    stop(FinishReason::Normal);
+}
+
+void Conversation::abort() {
+    stop(FinishReason::Abort);
+}
+
+void Conversation::stop(FinishReason reason) {
+    stop(reason, _generation);
+}
+
+void Conversation::stop(FinishReason reason, uint64_t generation) {
+    if (generation == 0 || _generation != generation || _finishing || !_game.ownsDialogueCamera(*this, generation)) {
+        return;
+    }
+    if (!_game.isDialogueCameraCurrent(*this, generation)) {
+        reason = FinishReason::RuntimeRetirement;
+    }
+    _finishing = true;
+    auto dialog = _dialog;
+    auto ownerReference = _owner;
+    auto owner = ownerReference.resolve();
     _paused = false;
-    onFinish();
-
-    // A reply script can hand the screen to something else before the
-    // conversation ends -- PlayPazaak opens the pazaak board from a dialogue
-    // action -- so only return to the world if the conversation still owns it.
-    if (_game.currentScreen() == Game::Screen::Conversation) {
-        _game.openInGame();
+    _entryEnded = true;
+    // A normal one-liner hands its still-playing voice to the bark. Retain
+    // the existing voice lifetime (and the handle used to stop it at the next
+    // entry); camera release must not silence it. Technical termination stops it.
+    if (_currentVoice && reason != FinishReason::Normal) {
+        _currentVoice->stop();
+        _currentVoice.reset();
     }
-
-    // Run EndConversation script
-    auto owner = _owner.resolve();
-    if (!_dialog->endScript.empty() && owner) {
-        _game.scriptRunner().run(_dialog->endScript, owner->id());
-    }
-
-    if (owner) {
+    if (owner && reason != FinishReason::Normal) {
+        // Technical teardown has no end script that can observe this flag.
         owner->setIsInConversation(false);
+    }
+    const bool restoreGameplay = reason != FinishReason::RuntimeRetirement && reason != FinishReason::Destruction;
+    // Publication is disabled by _finishing. Restore participants in the GUI
+    // while runtime objects and their scene are still alive. This hook does
+    // not dispatch authored scripts.
+    std::exception_ptr failure;
+    try {
+        onFinish();
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    _game.releaseDialogueCamera(*this, generation, restoreGameplay);
+    if (_generation == generation) {
+        _generation = 0;
+        _finishing = false;
+        _currentEntry = nullptr;
+        _replies.clear();
+        _autoPickFirstReply = false;
+        _cameraModel.reset();
+        _lipAnimation.reset();
+        _owner.reset();
+        _dialog.reset();
+    }
+
+    // A script may already have handed the screen to a minigame, or a cleanup
+    // callback may have acquired a new conversation. Neither belongs to us.
+    if (restoreGameplay && reason != FinishReason::Replacement && _game._conversationGeneration == generation &&
+        !_game._conversation && _game.currentScreen() == Game::Screen::Conversation) {
+        _game.openInGame();
+        _game.setRelativeMouseMode(_game.cameraType() == CameraType::FirstPerson);
+    }
+    // Ordinary end scripts historically see the owner's conversation flag
+    // until they return. Stunt restoration may already have cleared it, as
+    // before. Preserve that observation without clearing a replacement's flag.
+    auto releaseOwnerFlag = [&]() {
+        if (auto previousOwner = ownerReference.resolve()) {
+            auto replacement = _game._conversation;
+            if (!replacement || !replacement->ownsConversationFlag(*previousOwner)) {
+                previousOwner->setIsInConversation(false);
+            }
+        }
+    };
+    try {
+        if (failure) std::rethrow_exception(failure);
+        // Only the existing normal-finish path dispatches EndConversation.
+        // Camera/model, screen and participant cleanup is already complete.
+        if (reason == FinishReason::Normal && dialog && !dialog->endScript.empty()) {
+            if (auto caller = ownerReference.resolve()) {
+                _game.scriptRunner().run(dialog->endScript, caller->id());
+            }
+        }
+    } catch (...) {
+        releaseOwnerFlag();
+        throw;
+    }
+    releaseOwnerFlag();
+}
+
+void Conversation::cleanupForDestruction() noexcept {
+    try {
+        stop(FinishReason::Destruction);
+    } catch (const std::exception &e) {
+        warn("Conversation destruction cleanup failed: " + std::string(e.what()));
+    } catch (...) {
+        warn("Conversation destruction cleanup failed");
     }
 }
 
 void Conversation::onFinish() {
 }
 
+bool Conversation::ownsConversationFlag(const Object &object) const {
+    return isCurrentConversation() && _owner.resolve().get() == &object;
+}
+
 void Conversation::cleanupForModuleTransition() {
-    _paused = false;
-    if (!_dialog) {
-        return;
-    }
-    if (_currentVoice) {
-        _currentVoice->stop();
-        _currentVoice.reset();
-    }
-    _lipAnimation.reset();
-    onFinish();
-    if (auto owner = _owner.resolve()) {
-        owner->setIsInConversation(false);
-    }
+    stop(FinishReason::RuntimeRetirement);
 }
 
 void Conversation::loadEntry(int index, bool start) {
+    if (!isCurrentConversation()) {
+        return;
+    }
+    const auto generation = _generation;
+    auto dialog = _dialog;
     debug("Load entry " + std::to_string(index), LogChannel::Conversation);
     _currentEntry = &_dialog->getEntry(index);
 
@@ -250,16 +383,24 @@ void Conversation::loadEntry(int index, bool start) {
 
     std::string entryText(_game.substituteCustomTokens(_currentEntry->text));
     setMessage(entryText);
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
     loadReplies();
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
     loadVoiceOver();
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
 
     // Run entry scripts. An entry action can start another conversation, which
     // replaces this one outright. Holding the dialogue keeps this entry and its
     // replies alive for the script to act on, and tells us to stop rather than
     // carry on driving the new session with the old one's state.
-    auto dialog = _dialog;
     runScripts(*_currentEntry);
-    if (_dialog != dialog) {
+    if (!isCurrentConversation(generation)) {
         return;
     }
 
@@ -276,6 +417,9 @@ void Conversation::loadEntry(int index, bool start) {
 
     scheduleEndOfEntry();
     onLoadEntry();
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
 
     if (oneLiner) {
         setBarkText(std::move(entryText), _entryDuration);
@@ -360,10 +504,17 @@ void Conversation::scheduleEndOfEntry() {
 }
 
 void Conversation::loadReplies() {
+    const auto generation = _generation;
+    auto dialog = _dialog;
+    auto entry = _currentEntry;
     _replies.clear();
-    for (auto &link : _currentEntry->replies) {
-        if (isLinkActive(link)) {
-            _replies.push_back(&_dialog->getReply(link.index));
+    for (auto &link : entry->replies) {
+        bool active = isLinkActive(link);
+        if (!isCurrentConversation(generation)) {
+            return;
+        }
+        if (active) {
+            _replies.push_back(&dialog->getReply(link.index));
         }
     }
 
@@ -388,6 +539,10 @@ void Conversation::refreshReplies() {
 }
 
 void Conversation::pickReply(int index) {
+    if (!isCurrentConversation()) {
+        return;
+    }
+    const auto generation = _generation;
     debug("Pick reply " + std::to_string(index), LogChannel::Conversation);
     const Dialog::EntryReply &reply = *_replies[index];
 
@@ -399,11 +554,14 @@ void Conversation::pickReply(int index) {
 
     // A reply action can start another conversation, replacing this one. Going
     // on would advance or finish the new session in place of the old one.
-    if (_dialog != dialog) {
+    if (!isCurrentConversation(generation)) {
         return;
     }
 
     int entryIdx = indexOfFirstActive(reply.entries);
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
     if (entryIdx == -1) {
         debug("Finish (no active entries)", LogChannel::Conversation);
         finish();
@@ -413,6 +571,9 @@ void Conversation::pickReply(int index) {
 }
 
 bool Conversation::handle(const input::Event &event) {
+    if (!isCurrentConversation()) {
+        return false;
+    }
     switch (event.type) {
     case input::EventType::MouseButtonDown:
         if (handleMouseButtonDown(event.button))
@@ -454,9 +615,10 @@ bool Conversation::isNonPresentationalEntry() const {
 }
 
 void Conversation::endCurrentEntry() {
-    if (!_currentEntry || _entryEnded || _paused) {
+    if (!isCurrentConversation() || !_currentEntry || _entryEnded || _paused) {
         return;
     }
+    const auto generation = _generation;
     _entryEnded = true;
 
     // Stop voice over, if any
@@ -466,6 +628,9 @@ void Conversation::endCurrentEntry() {
     }
 
     onEntryEnded();
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
 
     if (_autoPickFirstReply) {
         pickReply(0);
@@ -506,11 +671,18 @@ bool Conversation::handleKeyUp(const input::KeyEvent &event) {
 }
 
 void Conversation::update(float dt) {
+    if (!isCurrentConversation()) {
+        return;
+    }
+    const auto generation = _generation;
     if (_dialog && !_owner.empty() && !_owner.resolve()) {
         finish();
         return;
     }
     GameGUI::update(dt);
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
     if (!_entryEnded) {
         _endEntryTimer.update(dt);
         if (!_paused && (_endEntryTimer.elapsed() || (_currentVoice && !_currentVoice->isPlaying()))) {
@@ -520,6 +692,9 @@ void Conversation::update(float dt) {
 }
 
 CameraType Conversation::getCamera(int &cameraId) const {
+    if (!isCurrentConversation() || !_currentEntry) {
+        return _game.cameraType();
+    }
     std::string cameraModel(_dialog->cameraModel);
     if (!cameraModel.empty()) {
         return CameraType::Animated;

@@ -280,7 +280,10 @@ void EmitterSceneNode::spawnLightningParticles() {
         auto child = *it;
         if ((*it)->type() == SceneNodeType::Particle) {
             _particlePool.push_back(static_cast<ParticleSceneNode *>(child));
-            it = _children.erase(it);
+            ++it;
+            // Dormant particles must not retain a borrowed parent edge.
+            // Private model teardown releases these nodes independently.
+            removeChild(*child);
         } else {
             ++it;
         }

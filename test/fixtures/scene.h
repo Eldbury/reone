@@ -34,6 +34,7 @@ public:
     MOCK_METHOD(graphics::Texture &, render, (const glm::ivec2 &dim), (override));
 
     MOCK_METHOD(void, clear, (), (override));
+    MOCK_METHOD(void, releaseUnrootedNode, (SceneNode &), (override));
 
     MOCK_METHOD(void, addRoot, (std::shared_ptr<ModelSceneNode>), (override));
     MOCK_METHOD(void, addRoot, (std::shared_ptr<WalkmeshSceneNode>), (override));

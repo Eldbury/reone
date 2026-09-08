@@ -35,12 +35,19 @@ static void setVisible(const std::shared_ptr<Label> &control, bool visible) {
     }
 }
 
+ComputerGUI::~ComputerGUI() {
+    cleanupForDestruction();
+}
+
 void ComputerGUI::init() {
     Conversation::init();
     _cameraGUI.init();
 }
 
 bool ComputerGUI::handle(const input::Event &event) {
+    if (!isCurrentConversation()) {
+        return false;
+    }
     if (_presentation == Presentation::Camera) {
         return _cameraGUI.handle(event);
     }
@@ -48,7 +55,11 @@ bool ComputerGUI::handle(const input::Event &event) {
 }
 
 void ComputerGUI::update(float dt) {
+    const auto generation = conversationGeneration();
     Conversation::update(dt);
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
     if (_presentation == Presentation::Camera) {
         _cameraGUI.update(dt);
     }

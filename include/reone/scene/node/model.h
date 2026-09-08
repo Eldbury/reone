@@ -178,6 +178,7 @@ public:
     // Attachments
 
     void attach(const std::string &parentName, SceneNode &node);
+    void detach(SceneNode &node);
 
     SceneNode *getAttachment(const std::string &parentName);
 

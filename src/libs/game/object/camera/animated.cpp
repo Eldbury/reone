@@ -31,9 +31,44 @@ namespace reone {
 
 namespace game {
 
+AnimatedCamera::~AnimatedCamera() {
+    retire();
+}
+
+void AnimatedCamera::retire() {
+    _retired = true;
+    resetPlayback();
+    if (_sceneNode) {
+        _sceneNode->graph().releaseUnrootedNode(*_sceneNode);
+        _sceneNode.reset();
+    }
+}
+
+void AnimatedCamera::resetPlayback() {
+    if (_model && _sceneNode) {
+        _model->detach(*_sceneNode);
+    }
+    if (_model) {
+        _model->graph().releaseUnrootedNode(*_model);
+        _model.reset();
+    }
+    _modelResource.reset();
+}
+
 void AnimatedCamera::load() {
+    if (_retired || _sceneNode) {
+        return;
+    }
     auto &scene = _services.scene.graphs.get(_sceneName);
-    _sceneNode = scene.newCamera();
+    auto node = scene.newCamera();
+    if (_retired) {
+        if (node) scene.releaseUnrootedNode(*node);
+        return;
+    }
+    _sceneNode = std::move(node);
+    if (!_sceneNode) {
+        throw std::runtime_error("Unable to create dialogue camera node");
+    }
     rebuildProjection();
 }
 
@@ -42,6 +77,9 @@ float AnimatedCamera::projectionFovy() const {
 }
 
 void AnimatedCamera::update(float dt) {
+    if (_retired) {
+        return;
+    }
     Camera::update(dt);
 
     if (_model) {
@@ -72,21 +110,31 @@ bool AnimatedCamera::isAnimationFinished() const {
 }
 
 void AnimatedCamera::setModel(std::shared_ptr<Model> model) {
-    if ((_model && &_model->model() == model.get()) ||
+    if (_retired || (_model && &_model->model() == model.get()) ||
         (!_model && !model))
         return;
 
+    resetPlayback();
     if (model) {
         auto &scene = _services.scene.graphs.get(_sceneName);
-        _model = scene.newModel(*model, ModelUsage::Camera);
+        // Resource loading may reenter dialogue replacement. Keep the resource
+        // and new tree local until we know this camera still owns playback.
+        auto node = scene.newModel(*model, ModelUsage::Camera);
+        if (_retired) {
+            if (node) scene.releaseUnrootedNode(*node);
+            return;
+        }
+        _modelResource = std::move(model);
+        _model = std::move(node);
+        if (!_model || !_sceneNode) {
+            throw std::runtime_error("Unable to create dialogue camera model");
+        }
         _model->attach("camerahook", *_sceneNode);
-    } else {
-        _model.reset();
     }
 }
 
 void AnimatedCamera::setFieldOfView(float fovy) {
-    if (_fovy == fovy) {
+    if (_retired || _fovy == fovy) {
         return;
     }
     _fovy = fovy;

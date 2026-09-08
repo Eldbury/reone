@@ -34,12 +34,20 @@ namespace game {
 
 class Conversation : public GameGUI {
     friend class TestConversation;
+    friend class Game;
+    friend class DialogueCameraTestAccess;
 
 public:
     Conversation(Game &game, ServicesView &services) :
         GameGUI(game, services) {
     }
 
+    ~Conversation() override;
+
+    // Technical termination does not synthesize authored end/abort scripts.
+    enum class FinishReason { Normal, Abort, Replacement, StartupFailure, RuntimeRetirement, Destruction };
+
+    void abort();
     bool handle(const input::Event &event) override;
     void update(float dt) override;
 
@@ -65,6 +73,12 @@ public:
 
 protected:
     std::shared_ptr<Object> owner() const { return _owner.resolve(); }
+    void cleanupForDestruction() noexcept;
+    bool isCurrentConversation() const;
+    bool isCurrentConversation(uint64_t generation) const;
+    uint64_t conversationGeneration() const { return _generation; }
+    void setCameraModel(uint64_t generation);
+    void playCamera(uint64_t generation, float fovy, int animation);
     std::shared_ptr<resource::Dialog> _dialog;
     RuntimeObjectRef<Object> _owner;
     std::shared_ptr<graphics::Model> _cameraModel;
@@ -87,6 +101,9 @@ protected:
 
     virtual void onStart();
     virtual void onFinish();
+    // Only used when an old end script returns after starting a replacement.
+    // Participant restoration stays with the GUI that acquired those flags.
+    virtual bool ownsConversationFlag(const Object &object) const;
     virtual void onLoadEntry();
     virtual void onEntryEnded();
 
@@ -111,12 +128,14 @@ private:
     void refreshReplies();
 
     void finish();
+    void stop(FinishReason reason);
+    void stop(FinishReason reason, uint64_t generation);
+    uint64_t _generation {0};
+    bool _finishing {false};
 
     int indexOfFirstActive(const std::vector<resource::Dialog::EntryReplyLink> &links);
 
     bool isLinkActive(const resource::Dialog::EntryReplyLink &link);
-    bool evaluateCondition(const std::string &scriptResRef, const resource::Dialog::EntryReplyLink::ConditionParams &params);
-    void runScript(const std::string &scriptResRef, const resource::Dialog::EntryReply::ActionParams &params);
     void runScripts(const resource::Dialog::EntryReply &node);
     void applyStatusSummaryEntries(const resource::Dialog::EntryReply &node);
 

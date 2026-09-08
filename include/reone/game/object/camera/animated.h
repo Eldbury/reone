@@ -42,7 +42,11 @@ public:
             services) {
     }
 
+    ~AnimatedCamera();
+
     void load();
+    void resetPlayback();
+    void retire();
 
     void update(float dt) override;
 
@@ -54,8 +58,12 @@ public:
     void setFieldOfView(float fovy);
 
 private:
+    // The model node borrows its resource. Keep both until the owning dialogue
+    // session releases playback, even if the provider or GUI drops its cache.
+    std::shared_ptr<graphics::Model> _modelResource;
     std::shared_ptr<scene::ModelSceneNode> _model;
     float _fovy {kDefaultAnimCamFOV};
+    bool _retired {false};
 
     float projectionFovy() const override;
 };

@@ -31,12 +31,15 @@ namespace game {
 
 class DialogGUI : public Conversation {
     friend class MixedStuntTestAccess;
+    friend class DialogueCameraTestAccess;
 
 public:
     DialogGUI(Game &game, ServicesView &services) :
         Conversation(game, services) {
         _resRef = guiResRef("dialog");
     }
+
+    ~DialogGUI() override;
 
     void update(float dt) override;
 
@@ -48,8 +51,6 @@ private:
         std::shared_ptr<graphics::Model> model;
         RuntimeObjectRef<Creature> creature;
         bool mixedStuntActive {false};
-        glm::vec3 restorePosition {0.0f};
-        float restoreFacing {0.0f};
         bool restoreCulling {true};
     };
 
@@ -80,6 +81,7 @@ private:
 
     void preload(gui::IGUI &gui) override;
     void onGUILoaded() override;
+    bool ownsConversationFlag(const Object &object) const override;
 
     void bindControls() {
         _controls.LBL_MESSAGE = findControl<gui::Label>("LBL_MESSAGE");

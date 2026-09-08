@@ -74,6 +74,10 @@ public:
 
     virtual void clear() = 0;
 
+    // Release a private tree which has never been registered as a scene root.
+    // Detach borrowed attachments first. The graph must outlive the caller.
+    virtual void releaseUnrootedNode(SceneNode &node) = 0;
+
     virtual bool testElevation(const glm::vec3 &position, Collision &outCollision) const = 0;
     virtual bool testLineOfSight(const glm::vec3 &origin, const glm::vec3 &dest, Collision &outCollision) const = 0;
     virtual bool testWalk(const glm::vec3 &origin, const glm::vec3 &dest, const IUser *excludeUser, Collision &outCollision) const = 0;
@@ -182,6 +186,7 @@ public:
     // Roots
 
     void clear() override;
+    void releaseUnrootedNode(SceneNode &node) override;
 
     void addRoot(std::shared_ptr<ModelSceneNode> node) override;
     void addRoot(std::shared_ptr<WalkmeshSceneNode> node) override;

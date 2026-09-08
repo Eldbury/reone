@@ -558,9 +558,6 @@ void Area::initCameras(const glm::vec3 &entryPosition, float entryFacing) {
             _dialogCamera = _game.newDialogCamera(
                 _camStyleDefault, _sceneName);
             _dialogCamera->load();
-
-            _animatedCamera = _game.newAnimatedCamera(_sceneName);
-            _animatedCamera->load();
         },
         []() noexcept {});
 }
@@ -707,6 +704,13 @@ void Area::detachObjectRuntime(const std::shared_ptr<Object> &object) {
 
     auto &sceneGraph = _services.scene.graphs.get(_sceneName);
     auto sceneNode = object->sceneNode();
+    if (_staticCamera == object.get()) {
+        auto published = sceneGraph.camera();
+        if (published && &published->get() == sceneNode.get()) {
+            sceneGraph.setActiveCamera(nullptr);
+        }
+        _staticCamera = nullptr;
+    }
     if (sceneNode) {
         if (sceneNode->type() == SceneNodeType::Model) {
             sceneGraph.removeRoot(*std::static_pointer_cast<ModelSceneNode>(sceneNode));
@@ -1525,7 +1529,7 @@ Camera *Area::getCamera(CameraType type) {
     case CameraType::Static:
         return _staticCamera;
     case CameraType::Animated:
-        return _animatedCamera.get();
+        return _game.getDialogueAnimatedCamera(*this);
     case CameraType::Dialog:
         return _dialogCamera.get();
     default:

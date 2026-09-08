@@ -35,6 +35,8 @@ public:
         _resRef = guiResRef("computer");
     }
 
+    ~ComputerGUI() override;
+
     void init() override;
     bool handle(const input::Event &event) override;
     void update(float dt) override;

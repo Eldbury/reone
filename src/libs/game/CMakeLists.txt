@@ -489,6 +489,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/floatingtext.cpp
     ${GAME_SOURCE_DIR}/galaxymapstate.cpp
     ${GAME_SOURCE_DIR}/game.cpp
+    ${GAME_SOURCE_DIR}/dialogcamerasession.cpp
     ${GAME_SOURCE_DIR}/itemdescription.cpp
     ${GAME_SOURCE_DIR}/gui/actionbar.cpp
     ${GAME_SOURCE_DIR}/gui/actionslot.cpp

@@ -74,6 +74,8 @@ public:
     float grav() const { return _grav; }
 
 private:
+    friend class SceneGraph; // Releases the private tree, including dormant particles.
+
     template <class T>
     struct StartMidEnd {
         T start;

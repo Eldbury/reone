@@ -221,7 +221,6 @@ public:
         Game &game,
         const std::shared_ptr<Module> &module,
         const SerializedIdentityContext &identityContext);
-    static void bindConversation(Game &game, Conversation &conversation);
     static bool hasConversation(const Game &game);
     static void bindHUDSelection(Game &game, std::shared_ptr<Object> object);
     static bool hasHUDSelection(const Game &game);

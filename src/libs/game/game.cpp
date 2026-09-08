@@ -1320,10 +1320,6 @@ bool Game::loadPreparedModule(
                           % _pendingTurret.targetModule % name));
                 _pendingTurret = PendingTurretRequest();
             }
-            if (_screen == Screen::Conversation && _conversation) {
-                _conversation->cleanupForModuleTransition();
-            }
-
             if (_module) {
                 // The source snapshot is already frozen. Module retirement
                 // now owns the full Area-departure boundary itself.
@@ -1534,6 +1530,8 @@ void Game::retireActiveModuleRuntime() {
 }
 
 void Game::retireActiveAreaRuntime() {
+    retireConversation(Conversation::FinishReason::RuntimeRetirement);
+    unpublishActiveCamera();
     auto module = _module;
     auto area = module ? module->area() : nullptr;
     if (area) {
@@ -1566,6 +1564,8 @@ void Game::retireRuntimeSession() {
         cancelled.message = "Runtime session retired before save execution";
         finalizeSaveRequest(request, std::move(cancelled));
     }
+    retireConversation(Conversation::FinishReason::RuntimeRetirement);
+    unpublishActiveCamera();
     ++_runtimeSessionGeneration;
     _runtimeSessionPlayable = false;
     _screen = Screen::None;
@@ -1584,11 +1584,6 @@ void Game::retireRuntimeSession() {
     _pendingTurret = PendingTurretRequest();
     _swoopLifecycle = MinigameLifecycle();
     _turretLifecycle = MinigameLifecycle();
-
-    if (_conversation) {
-        _conversation->cleanupForModuleTransition();
-        _conversation = nullptr;
-    }
 
     _services.audio.mixer.stopAll();
     _music.reset();
@@ -2520,10 +2515,13 @@ Camera *Game::getActiveCamera() const {
         return nullptr;
     }
     std::shared_ptr<Area> area(_module->area());
-    if (!area) {
+    if (!area || !area->isRuntimeLive()) {
         return nullptr;
     }
-    return area->getCamera(_cameraType);
+    auto camera = area->getCamera(_cameraType);
+    return camera && camera->sceneNode() &&
+                   (camera->isRuntimeLive() || camera->isPresentationOnly())
+               ? camera : nullptr;
 }
 
 std::shared_ptr<Object> Game::getObjectById(uint32_t id) const {
@@ -2608,6 +2606,29 @@ void Game::destroyRuntimeObjectGraph(const std::shared_ptr<Object> &object) {
         return;
     }
     auto graph = collectRuntimeObjectGraph({object});
+    auto contains = [&graph](const Object *candidate) {
+        return std::any_of(graph.begin(), graph.end(), [candidate](const auto &owned) {
+            return owned.get() == candidate;
+        });
+    };
+    // Direct graph destruction must obey the same camera/participant boundary
+    // as module retirement, before any owned object loses its incarnation.
+    auto activeArea = _module ? _module->area() : nullptr;
+    const bool retiringArea = activeArea && contains(activeArea.get());
+    if (retiringArea) {
+        retireConversation(Conversation::FinishReason::RuntimeRetirement);
+        unpublishActiveCamera();
+    }
+    for (const auto &owned : graph) {
+        auto node = owned->sceneNode();
+        if (node && node->type() == scene::SceneNodeType::Camera) {
+            auto &sceneGraph = node->graph();
+            auto published = sceneGraph.camera();
+            if (published && &published->get() == node.get()) {
+                sceneGraph.setActiveCamera(nullptr);
+            }
+        }
+    }
     // Children cease to exist before their owner. The pointer guard makes this
     // idempotent and protects a newer object if an explicit ID was reused.
     for (auto it = graph.rbegin(); it != graph.rend(); ++it) {
@@ -3701,6 +3722,9 @@ void Game::updateCamera(float dt) {
     switch (_screen) {
     case Screen::Conversation: {
         int cameraId;
+        if (!_conversation || !_conversation->isCurrentConversation()) {
+            break;
+        }
         CameraType cameraType = getConversationCamera(cameraId);
         if (cameraType == CameraType::Static) {
             _module->area()->setStaticCamera(cameraId);
@@ -3720,22 +3744,27 @@ void Game::updateCamera(float dt) {
     if (camera) {
         camera->update(dt);
 
-        glm::vec3 listenerPosition;
-        if (_cameraType == CameraType::ThirdPerson) {
-            std::shared_ptr<Creature> partyLeader(_party.getLeader());
-            if (partyLeader) {
-                listenerPosition = partyLeader->position() + glm::vec3 {0.0f, 0.0f, 1.7f}; // TODO: height based on appearance
-            }
-        } else {
-            listenerPosition = camera->sceneNode()->origin();
-        }
-        _services.audio.context.setListenerPosition(std::move(listenerPosition));
+        updateCameraListener(*camera);
     }
+}
+
+void Game::updateCameraListener(Camera &camera) {
+    glm::vec3 listenerPosition(0.0f);
+    if (_cameraType == CameraType::ThirdPerson) {
+        auto partyLeader = _party.getLeader();
+        if (partyLeader) {
+            listenerPosition = partyLeader->position() + glm::vec3 {0.0f, 0.0f, 1.7f}; // TODO: height based on appearance
+        }
+    } else if (camera.sceneNode()) {
+        listenerPosition = camera.sceneNode()->origin();
+    }
+    _services.audio.context.setListenerPosition(std::move(listenerPosition));
 }
 
 void Game::updateSceneGraph(float dt) {
     auto camera = getActiveCamera();
     if (!camera) {
+        unpublishActiveCamera();
         return;
     }
     auto &sceneGraph = _services.scene.graphs.get(kSceneMain);
@@ -5309,16 +5338,25 @@ void Game::startDialog(const std::shared_ptr<Object> &owner, const std::string &
         return;
     }
 
+    auto dialog = _services.resource.dialogs.get(resRef);
+    if (!dialog) {
+        warn("Game: conversation could not be loaded: " + resRef);
+        return;
+    }
+    bool computerConversation = dialog->conversationType == ConversationType::Computer;
+    auto conversation = computerConversation ? _computer.get() : static_cast<Conversation *>(_dialog.get());
+    if (!conversation) {
+        warn("Game: conversation GUI is unavailable: " + resRef);
+        return;
+    }
+
     stopMovement();
     setRelativeMouseMode(false);
     setCursorType(CursorType::Default);
     changeScreen(Screen::Conversation);
 
-    auto dialog = _services.resource.dialogs.get(resRef);
-    bool computerConversation = dialog->conversationType == ConversationType::Computer;
-    _conversation = computerConversation ? _computer.get() : static_cast<Conversation *>(_dialog.get());
-    _conversation->setAutoSkip(&_conversationAutoSkip);
-    _conversation->start(dialog, owner);
+    conversation->setAutoSkip(&_conversationAutoSkip);
+    conversation->start(dialog, owner);
 }
 
 void Game::resumeConversation() {
@@ -5475,7 +5513,8 @@ void Game::renderHUD() {
 }
 
 CameraType Game::getConversationCamera(int &cameraId) const {
-    return _conversation->getCamera(cameraId);
+    return _conversation && _conversation->isCurrentConversation()
+               ? _conversation->getCamera(cameraId) : _cameraType;
 }
 
 void Game::updateImGui(float dt) {

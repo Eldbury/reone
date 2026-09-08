@@ -54,6 +54,8 @@ public:
         return _currentEntry->text;
     }
 
+    bool hasCurrentEntry() const { return _currentEntry != nullptr; }
+
     int entryLoadCount() const {
         return _entryLoadCount;
     }
@@ -563,9 +565,27 @@ TEST_F(ConversationTest, one_liner_presents_its_entry_and_completes_without_open
     // Barked, not presented through the conversation GUI, and already over.
     EXPECT_EQ("bark", _conversation->barkText());
     EXPECT_EQ(1, _conversation->barkCount());
-    EXPECT_EQ("bark", _conversation->currentText());
+    EXPECT_FALSE(_conversation->hasCurrentEntry());
     EXPECT_EQ(Game::Screen::None, _game->currentScreen());
     EXPECT_EQ(1, _conversation->entryLoadCount());
+}
+
+TEST_F(ConversationTest, completed_one_liner_keeps_the_voice_handle_until_the_next_entry) {
+    auto clip = makeOneSecondClip();
+    auto source = std::make_shared<AudioSource>(clip);
+    std::weak_ptr<AudioSource> voice = source;
+    auto &mixer = static_cast<audio::MockAudioMixer &>(_engine.services().audio.mixer);
+    EXPECT_CALL(_engine.resourceModule().audioClips(), get("bark_voice")).WillOnce(Return(clip));
+    EXPECT_CALL(mixer, play(_, AudioType::Voice, _, _, _)).WillOnce(Return(source));
+    auto dialog = makeOneLinerDialog("", "");
+    dialog->entries.front().sound = "bark_voice";
+    _conversation->start(dialog, nullptr);
+    Mock::VerifyAndClearExpectations(&mixer);
+    source.reset();
+    EXPECT_FALSE(_conversation->hasCurrentEntry());
+    EXPECT_FALSE(voice.expired());
+    startSilent();
+    EXPECT_TRUE(voice.expired());
 }
 
 TEST_F(ConversationTest, completed_one_liner_does_not_run_its_actions_a_second_time) {

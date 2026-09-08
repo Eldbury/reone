@@ -176,6 +176,25 @@ void ModelSceneNode::attach(const std::string &parentName, SceneNode &node) {
     computeAABB();
 }
 
+void ModelSceneNode::detach(SceneNode &node) {
+    // More than one attachment can share a hook, although _attachments is
+    // indexed by hook name. Use the actual parent to remove the borrowed edge.
+    auto parent = node.parent();
+    if (parent && std::any_of(_nodeByName.begin(), _nodeByName.end(), [parent](const auto &entry) {
+            return entry.second == parent;
+        })) {
+        parent->removeChild(node);
+    }
+    for (auto it = _attachments.begin(); it != _attachments.end();) {
+        if (it->second == &node) {
+            it = _attachments.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    computeAABB();
+}
+
 ModelNodeSceneNode *ModelSceneNode::getNodeByNumber(uint16_t number) {
     auto it = _nodeByNumber.find(number);
     return it != _nodeByNumber.end() ? it->second : nullptr;

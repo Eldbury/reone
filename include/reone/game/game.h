@@ -164,6 +164,8 @@ public:
         initJournalNotifications();
     }
 
+    ~Game();
+
     void init();
 
     bool handle(const input::Event &event);
@@ -802,6 +804,8 @@ public:
 
 private:
     friend class Area;
+    friend class Conversation;
+    friend class DialogueCameraTestAccess;
     friend class Object;
     friend class TestGameModule;
     friend class ModuleSnapshotBuilder;
@@ -983,6 +987,30 @@ private:
 
     Conversation *_conversation {nullptr}; /**< pointer to either DialogGUI or ComputerGUI  */
     Conversation::AutoSkip _conversationAutoSkip;
+
+    // One lifetime for both dialogue GUIs. Area camera queries borrow this
+    // animated camera; neither Area nor a GUI retains its mutable playback.
+    struct DialogueCameraSession {
+        uint64_t generation {0};
+        uint64_t runtimeSession {0};
+        RuntimeObjectRef<Area> area;
+        CameraType gameplayCamera {CameraType::ThirdPerson};
+        std::shared_ptr<AnimatedCamera> animatedCamera;
+    };
+    std::optional<DialogueCameraSession> _dialogueCameraSession;
+    uint64_t _conversationGeneration {0};
+
+    uint64_t acquireDialogueCamera(Conversation &conversation);
+    void initializeDialogueCamera(Conversation &conversation, uint64_t generation);
+    void setDialogueCameraModel(Conversation &conversation, uint64_t generation, std::shared_ptr<graphics::Model> model);
+    void playDialogueCamera(Conversation &conversation, uint64_t generation, float fovy, int animation);
+    void updateCameraListener(Camera &camera);
+    bool ownsDialogueCamera(const Conversation &conversation, uint64_t generation) const;
+    bool isDialogueCameraCurrent(const Conversation &conversation, uint64_t generation) const;
+    void releaseDialogueCamera(Conversation &conversation, uint64_t generation, bool restoreGameplay);
+    AnimatedCamera *getDialogueAnimatedCamera(const Area &area) const;
+    void retireConversation(Conversation::FinishReason reason);
+    void unpublishActiveCamera();
 
     // END GUI
 

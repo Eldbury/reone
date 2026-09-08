@@ -72,6 +72,8 @@ static const std::vector<float> g_shadowCascadeDivisors {
     0.135f};
 
 void SceneGraph::clear() {
+    // Borrowed from a camera owner which may be released with this scene.
+    _activeCamera = nullptr;
     _modelRoots.clear();
     _walkmeshRoots.clear();
     _triggerRoots.clear();
@@ -955,6 +957,64 @@ std::optional<std::reference_wrapper<ModelSceneNode>> SceneGraph::pickModelRay(c
     return *model;
 }
 
+void SceneGraph::releaseUnrootedNode(SceneNode &node) {
+    // This deliberately does not remove rendered roots or alter their ticking.
+    // Private camera trees never enter the culling/rendering caches.
+    if (node.parent()) {
+        throw std::logic_error("Cannot release an attached scene node");
+    }
+    // Validate the entire tree before removing an edge or publication. A
+    // foreign node or a borrowed registered root must not be partly detached
+    // before an error is discovered deeper in the tree.
+    std::set<const SceneNode *> visited;
+    std::function<void(SceneNode &)> validate = [&](SceneNode &candidate) {
+        auto isRoot = [&candidate](const auto &roots) {
+            return std::any_of(roots.begin(), roots.end(), [&candidate](const auto &root) {
+                return root.get() == &candidate;
+            });
+        };
+        if (&candidate.graph() != this || !visited.insert(&candidate).second ||
+            isRoot(_modelRoots) || isRoot(_walkmeshRoots) || isRoot(_triggerRoots) ||
+            isRoot(_grassRoots) || isRoot(_soundRoots) ||
+            std::none_of(_nodes.begin(), _nodes.end(), [&candidate](const auto &owned) {
+                return owned.get() == &candidate;
+            })) {
+            throw std::logic_error("Cannot release a foreign, shared or registered scene tree");
+        }
+        for (auto child : candidate.children()) {
+            validate(*child);
+        }
+        if (candidate.type() == SceneNodeType::Emitter) {
+            for (auto particle : static_cast<const EmitterSceneNode &>(candidate)._particlePool) {
+                validate(*particle);
+            }
+        }
+    };
+    validate(node);
+    if (_activeCamera == &node) {
+        _activeCamera = nullptr;
+    }
+    if (node.type() == SceneNodeType::Emitter) {
+        auto &pool = static_cast<EmitterSceneNode &>(node)._particlePool;
+        while (!pool.empty()) {
+            auto particle = pool.front();
+            pool.pop_front();
+            releaseUnrootedNode(*particle);
+        }
+    }
+    while (!node.children().empty()) {
+        auto child = *node.children().begin();
+        node.removeChild(*child);
+        releaseUnrootedNode(*child);
+    }
+    auto owned = std::find_if(_nodes.begin(), _nodes.end(), [&node](const auto &candidate) {
+        return candidate.get() == &node;
+    });
+    if (owned != _nodes.end()) {
+        _nodes.erase(owned);
+    }
+}
+
 std::shared_ptr<CameraSceneNode> SceneGraph::newCamera() {
     auto node = newSceneNode<CameraSceneNode>();
     return std::move(node);
@@ -967,7 +1027,12 @@ std::shared_ptr<DummySceneNode> SceneGraph::newDummy(ModelNode &modelNode) {
 
 std::shared_ptr<ModelSceneNode> SceneGraph::newModel(Model &model, ModelUsage usage) {
     auto node = newSceneNode<ModelSceneNode, Model &, ModelUsage>(model, usage);
-    node->init();
+    try {
+        node->init();
+    } catch (...) {
+        releaseUnrootedNode(*node);
+        throw;
+    }
     return std::move(node);
 }
 
@@ -984,13 +1049,23 @@ std::shared_ptr<SoundSceneNode> SceneGraph::newSound() {
 
 std::shared_ptr<MeshSceneNode> SceneGraph::newMesh(ModelSceneNode &model, ModelNode &modelNode) {
     auto node = newSceneNode<MeshSceneNode, ModelSceneNode &, ModelNode &>(model, modelNode);
-    node->init();
+    try {
+        node->init();
+    } catch (...) {
+        releaseUnrootedNode(*node);
+        throw;
+    }
     return std::move(node);
 }
 
 std::shared_ptr<LightSceneNode> SceneGraph::newLight(ModelSceneNode &model, ModelNode &modelNode) {
     auto node = newSceneNode<LightSceneNode, ModelSceneNode &, ModelNode &>(model, modelNode);
-    node->init();
+    try {
+        node->init();
+    } catch (...) {
+        releaseUnrootedNode(*node);
+        throw;
+    }
     return std::move(node);
 }
 
@@ -1002,7 +1077,12 @@ std::shared_ptr<TriggerSceneNode> SceneGraph::newTrigger(std::vector<glm::vec3> 
 
 std::shared_ptr<EmitterSceneNode> SceneGraph::newEmitter(ModelNode &modelNode) {
     auto node = newSceneNode<EmitterSceneNode, ModelNode &>(modelNode);
-    node->init();
+    try {
+        node->init();
+    } catch (...) {
+        releaseUnrootedNode(*node);
+        throw;
+    }
     return std::move(node);
 }
 

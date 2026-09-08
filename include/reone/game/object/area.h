@@ -311,7 +311,6 @@ private:
     std::shared_ptr<FirstPersonCamera> _firstPersonCamera;
     std::shared_ptr<ThirdPersonCamera> _thirdPersonCamera;
     std::shared_ptr<DialogCamera> _dialogCamera;
-    std::shared_ptr<AnimatedCamera> _animatedCamera;
     StaticCamera *_staticCamera {nullptr};
 
     // END Cameras

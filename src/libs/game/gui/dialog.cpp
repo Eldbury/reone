@@ -203,13 +203,16 @@ void DialogGUI::configureReplies() {
     _controls.LB_REPLIES->protoItem().setTextColor(_baseColor);
 }
 
+DialogGUI::~DialogGUI() {
+    cleanupForDestruction();
+}
+
 void DialogGUI::onStart() {
+    const auto generation = conversationGeneration();
     _currentSpeaker = owner();
     _heldCutParticipants.clear();
     loadStuntParticipants();
-
-    auto camera = _game.module()->area()->getCamera<AnimatedCamera>(CameraType::Animated);
-    camera->setModel(_cameraModel);
+    setCameraModel(generation);
 }
 
 void DialogGUI::loadStuntParticipants() {
@@ -218,8 +221,10 @@ void DialogGUI::loadStuntParticipants() {
     }
 
     _participantByTag.clear();
+    const auto generation = conversationGeneration();
+    auto dialog = _dialog;
 
-    for (auto &stunt : _dialog->stunts) {
+    for (auto &stunt : dialog->stunts) {
         std::shared_ptr<Creature> creature(resolveParticipantCreature(stunt.participant));
         if (!creature) {
             warn("Dialog: participant creature not found by tag: " + stunt.participant);
@@ -229,6 +234,9 @@ void DialogGUI::loadStuntParticipants() {
         participant.creature = creature;
 
         std::shared_ptr<Model> model(_services.resource.models.get(stunt.stuntModel));
+        if (conversationGeneration() != generation || _dialog != dialog) {
+            return;
+        }
         if (!model) {
             warn("Dialog: stunt model not found: " + stunt.stuntModel);
             continue;
@@ -272,9 +280,16 @@ std::shared_ptr<Animation> DialogGUI::getStuntParticipantAnimation(
 }
 
 void DialogGUI::onLoadEntry() {
+    const auto generation = conversationGeneration();
     restoreInactiveStuntParticipants();
     loadCurrentSpeaker();
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
     updateParticipantAnimations();
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
     updateCamera();
     repositionMessage();
 
@@ -321,8 +336,6 @@ bool DialogGUI::enterMixedStunt(Participant &participant, const std::shared_ptr<
     }
 
     if (!participant.mixedStuntActive) {
-        participant.restorePosition = creature->position();
-        participant.restoreFacing = creature->getFacing();
         if (auto node = creature->sceneNode()) {
             participant.restoreCulling = node->isCullingEnabled();
         }
@@ -342,8 +355,8 @@ void DialogGUI::leaveMixedStunt(Participant &participant) {
         return;
     }
     creature->resumeStateDrivenAnimation();
-    creature->setPosition(participant.restorePosition);
-    creature->setFacing(participant.restoreFacing);
+    // Stunt mode only displaced the render node. Object's current transform
+    // remains authoritative, including placement performed during the cut.
     creature->stopStuntMode();
     if (auto node = creature->sceneNode()) {
         node->setCullingEnabled(participant.restoreCulling);
@@ -387,7 +400,13 @@ void DialogGUI::loadCurrentSpeaker() {
 }
 
 void DialogGUI::updateCamera() {
+    if (!isCurrentConversation() || !_game.module() || !_currentEntry) {
+        return;
+    }
     std::shared_ptr<Area> area(_game.module()->area());
+    if (!area) {
+        return;
+    }
 
     if (_dialog->cameraModel.empty()) {
         std::shared_ptr<Creature> player(_game.party().player());
@@ -400,9 +419,9 @@ void DialogGUI::updateCamera() {
         camera->setSpeakerPosition(speakerPosition);
         camera->setVariant(getRandomCameraVariant());
     } else {
-        auto camera = area->getCamera<AnimatedCamera>(CameraType::Animated);
-        camera->setFieldOfView(_currentEntry->camFieldOfView != 0.0f ? _currentEntry->camFieldOfView : kDefaultAnimCamFOV);
-        camera->playAnimation(_currentEntry->cameraAnimation);
+        playCamera(conversationGeneration(),
+                   _currentEntry->camFieldOfView != 0.0f ? _currentEntry->camFieldOfView : kDefaultAnimCamFOV,
+                   _currentEntry->cameraAnimation);
     }
 }
 
@@ -433,6 +452,7 @@ DialogCamera::Variant DialogGUI::getRandomCameraVariant() const {
 }
 
 void DialogGUI::updateParticipantAnimations() {
+    const auto generation = conversationGeneration();
     // Each authored animation is resolved on its own. The ordinal decides which
     // animation is meant, the participant decides which model plays it, and a
     // single entry may drive stunt-bound participants and ordinary area
@@ -442,6 +462,9 @@ void DialogGUI::updateParticipantAnimations() {
             applyCutAnimation(anim.participant, *cut);
         } else {
             applyDialogAnimation(anim.participant, anim.animation);
+        }
+        if (conversationGeneration() != generation) {
+            return;
         }
     }
 }
@@ -501,12 +524,16 @@ void DialogGUI::applyCutAnimation(const std::string &participant, const CutAnima
 }
 
 void DialogGUI::applyDialogAnimation(const std::string &participant, int ordinal) {
+    const auto generation = conversationGeneration();
     auto creature = resolveParticipantCreature(participant);
     if (!creature) {
         warn("Dialog: participant creature not found by tag: " + participant);
         return;
     }
     AnimationType animType = getDialogAnimationType(ordinal);
+    if (conversationGeneration() != generation) {
+        return;
+    }
     if (animType != AnimationType::Invalid) {
         creature->playAnimation(animType);
     }
@@ -583,6 +610,19 @@ void DialogGUI::onFinish() {
     if (speakerCreature) {
         speakerCreature->stopTalking();
     }
+    _currentSpeaker.reset();
+}
+
+bool DialogGUI::ownsConversationFlag(const Object &object) const {
+    if (Conversation::ownsConversationFlag(object)) {
+        return true;
+    }
+    if (!isCurrentConversation() || !_dialog->isAnimatedCutscene()) {
+        return false;
+    }
+    return std::any_of(_participantByTag.begin(), _participantByTag.end(), [&object](const auto &participant) {
+        return participant.second.creature.resolve().get() == &object;
+    });
 }
 
 void DialogGUI::holdCutParticipant(const std::shared_ptr<Creature> &creature) {
@@ -671,7 +711,11 @@ void DialogGUI::setReplyLines(std::vector<std::string> lines) {
 }
 
 void DialogGUI::update(float dt) {
+    const auto generation = conversationGeneration();
     Conversation::update(dt);
+    if (!isCurrentConversation(generation)) {
+        return;
+    }
 
     // Dialog camera follows the current speaker, if any
     auto speaker = _currentSpeaker.resolve();
