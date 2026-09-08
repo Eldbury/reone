@@ -25,6 +25,7 @@ set(TESTS_HEADERS
     ${TESTS_SOURCE_DIR}/checkutil.h
     ${TESTS_SOURCE_DIR}/fixtures/archive.h
     ${TESTS_SOURCE_DIR}/fixtures/audio.h
+    ${TESTS_SOURCE_DIR}/fixtures/cameraanimations.h
     ${TESTS_SOURCE_DIR}/fixtures/data.h
     ${TESTS_SOURCE_DIR}/fixtures/engine.h
     ${TESTS_SOURCE_DIR}/fixtures/game.h
@@ -109,6 +110,8 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/gui/controlrender.cpp
     ${TESTS_SOURCE_DIR}/json/gff.cpp
     ${TESTS_SOURCE_DIR}/resource/archivevalidation.cpp
+    ${TESTS_SOURCE_DIR}/resource/cameraanimation.cpp
+    ${TESTS_SOURCE_DIR}/resource/dialogcamera.cpp
     ${TESTS_SOURCE_DIR}/resource/extractresources.cpp
     ${TESTS_SOURCE_DIR}/resource/modulediscovery.cpp
     ${TESTS_SOURCE_DIR}/resource/moduleloading.cpp

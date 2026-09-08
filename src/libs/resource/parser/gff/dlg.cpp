@@ -83,8 +83,9 @@ static DLG_EntryReplyList parseDLG_EntryReplyList(const Gff &gff) {
         strct.AnimList.push_back(parseDLG_EntryReplyList_AnimList(*item));
     }
     strct.CamFieldOfView = gff.getFloat("CamFieldOfView");
+    strct.CamFieldOfViewPresent = gff.has("CamFieldOfView");
     strct.CamHeightOffset = gff.getFloat("CamHeightOffset");
-    strct.CamVidEffect = gff.getInt("CamVidEffect");
+    strct.CamVidEffect = gff.getInt("CamVidEffect", -1);
     strct.CameraAngle = gff.getUint("CameraAngle");
     strct.CameraAnimation = gff.getUint("CameraAnimation");
     strct.CameraID = gff.getInt("CameraID");

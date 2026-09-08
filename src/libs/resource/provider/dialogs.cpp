@@ -41,6 +41,8 @@ std::unique_ptr<Dialog> Dialogs::loadDialog(const resource::generated::DLG &dlg)
     dialog->skippable = dlg.Skippable;
     dialog->cameraModel = dlg.CameraModel;
     dialog->endScript = dlg.EndConversation;
+    dialog->abortScript = dlg.EndConverAbort;
+    dialog->oldHitCheck = dlg.OldHitCheck;
     dialog->animatedCutscene = dlg.AnimatedCut;
     dialog->conversationType = static_cast<ConversationType>(dlg.ConversationType);
     dialog->computerType = static_cast<ComputerType>(dlg.ComputerType);
@@ -102,6 +104,15 @@ Dialog::EntryReply Dialogs::getEntryReply(const resource::generated::DLG_EntryRe
     entry.cameraAngle = dlg.CameraAngle;
     entry.cameraAnimation = dlg.CameraAnimation;
     entry.camFieldOfView = dlg.CamFieldOfView;
+    entry.camFieldOfViewPresent = dlg.CamFieldOfViewPresent;
+    entry.camHeightOffset = dlg.CamHeightOffset;
+    entry.tarHeightOffset = dlg.TarHeightOffset;
+    entry.camVidEffect = dlg.CamVidEffect;
+    entry.nodeUnskippable = dlg.NodeUnskippable;
+    entry.fadeType = dlg.FadeType;
+    entry.fadeDelay = dlg.FadeDelay;
+    entry.fadeLength = dlg.FadeLength;
+    entry.fadeColor = dlg.FadeColor;
 
     boost::to_lower(entry.speaker);
     boost::to_lower(entry.listener);

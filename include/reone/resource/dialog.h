@@ -18,6 +18,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 
 #include "types.h"
 
@@ -78,12 +79,27 @@ struct Dialog {
         int delay {0};
         int waitFlags {0};
         int cameraId {-1};
-        int cameraAngle {0};
+        uint32_t cameraAngle {0};
         int cameraAnimation {0};
+        // Raw DLG value. Keep the existing zero read-default for live consumers.
         float camFieldOfView {0.0f};
+        bool camFieldOfViewPresent {false};
+        float camHeightOffset {0.0f};
+        float tarHeightOffset {0.0f};
+        int camVidEffect {-1};
+        int nodeUnskippable {0};
+        uint8_t fadeType {0};
+        float fadeDelay {0.0f};
+        float fadeLength {0.0f};
+        glm::vec3 fadeColor {0.0f};
         std::vector<EntryReplyLink> replies;
         std::vector<EntryReplyLink> entries;
         std::vector<ParticipantAnimation> animations;
+
+        // Authored eligibility only; neither query resolves a camera or applies
+        // a projection. Derive from the raw fields instead of caching a second spec.
+        std::optional<int> staticCameraId() const;
+        std::optional<float> cameraFieldOfViewOverride() const;
     };
 
     std::string resRef;
@@ -93,6 +109,8 @@ struct Dialog {
     std::vector<EntryReply> entries;
     std::vector<EntryReply> replies;
     std::string endScript;
+    std::string abortScript;
+    uint8_t oldHitCheck {0};
     int entryIndex {-1};
     bool animatedCutscene {false};
     std::vector<Stunt> stunts;

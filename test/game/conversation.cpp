@@ -260,6 +260,33 @@ TEST_F(ConversationTest, animated_dialogue_keeps_its_own_gui) {
     _conversation->render();
 }
 
+TEST_F(ConversationTest, authored_camera_queries_do_not_change_the_cam1_live_selector) {
+    auto dialog = makeDialog();
+    dialog->entries[0].cameraId = 0;
+    dialog->entries[0].cameraAngle = 6;
+    EXPECT_EQ(std::optional<int>(0), dialog->entries[0].staticCameraId());
+    _conversation->start(dialog, nullptr);
+    int cameraId = -1;
+    // CAM2 preserves data; consuming angle eligibility and ID zero is deferred.
+    EXPECT_EQ(CameraType::Dialog, _conversation->getCamera(cameraId));
+
+    dialog = makeDialog();
+    dialog->entries[0].cameraId = 5;
+    dialog->entries[0].cameraAngle = 4;
+    EXPECT_FALSE(dialog->entries[0].staticCameraId());
+    _conversation->start(dialog, nullptr);
+    EXPECT_EQ(CameraType::Static, _conversation->getCamera(cameraId));
+    EXPECT_EQ(5, cameraId);
+
+    dialog = makeDialog();
+    dialog->cameraModel = "camera_model";
+    dialog->entries[0].cameraAnimation = 10098;
+    _conversation->start(dialog, nullptr);
+    // Neither the pure decoder's gate nor clip-existence rules run here yet.
+    EXPECT_EQ(CameraType::Animated, _conversation->getCamera(cameraId));
+    EXPECT_EQ(10098, dialog->entries[0].cameraAnimation);
+}
+
 TEST_F(ConversationTest, game_pause_is_harmless_without_a_conversation) {
     EXPECT_FALSE(_game->isConversationActive());
 
