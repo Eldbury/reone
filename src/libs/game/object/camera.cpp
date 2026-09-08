@@ -17,6 +17,8 @@
 
 #include "reone/game/object/camera.h"
 
+#include <cmath>
+
 #include "reone/game/game.h"
 #include "reone/graphics/types.h"
 #include "reone/scene/node/camera.h"
@@ -33,12 +35,23 @@ void Camera::update(float) {
 }
 
 void Camera::rebuildProjection() {
+    if (!_sceneNode) return;
     auto &options = _game.options().graphics;
-    float aspect = options.width / static_cast<float>(options.height);
-    cameraSceneNode()->setPerspectiveProjection(projectionFovy(), aspect, graphics::kDefaultClipPlaneNear, graphics::kDefaultClipPlaneFar);
+    const float aspect = std::max(1, options.width) / static_cast<float>(std::max(1, options.height));
+    float fovy = projectionFovy();
+    if (!std::isfinite(fovy) || fovy <= 0 || fovy >= glm::pi<float>() ||
+        !std::isfinite(1.0f / std::tan(0.5f * fovy))) {
+        // Finite projection is a safety policy, not vanilla malformed-input
+        // parity. Static GIT values do not use DLG's unspecified/inherit rule.
+        fovy = glm::radians(45.0f);
+    }
+    cameraSceneNode()->setPerspectiveProjection(fovy, aspect, projectionNear(), projectionFar());
     _projectionWidth = options.width;
     _projectionHeight = options.height;
 }
+
+float Camera::projectionNear() const { return graphics::kDefaultClipPlaneNear; }
+float Camera::projectionFar() const { return graphics::kDefaultClipPlaneFar; }
 
 } // namespace game
 

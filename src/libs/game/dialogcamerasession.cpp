@@ -16,7 +16,10 @@
  */
 
 #include "reone/game/game.h"
+#include "reone/game/object/camera/static.h"
 
+#include "reone/graphics/camera/perspective.h"
+#include "reone/resource/cameraanimation.h"
 #include "reone/scene/di/services.h"
 #include "reone/scene/graphs.h"
 #include "reone/scene/node/camera.h"
@@ -90,16 +93,62 @@ void Game::setDialogueCameraModel(Conversation &conversation, uint64_t generatio
     if (camera) camera->setModel(std::move(model));
 }
 
-void Game::playDialogueCamera(Conversation &conversation, uint64_t generation, float fovy, int animation) {
+void Game::selectDialogueCamera(Conversation &conversation, uint64_t generation,
+                                const resource::Dialog::EntryReply &node, bool allowAnimation) {
     if (!isDialogueCameraCurrent(conversation, generation)) {
         return;
     }
-    auto camera = _dialogueCameraSession->animatedCamera;
-    if (!camera) {
+    auto &session = *_dialogueCameraSession;
+    auto area = session.area.resolve();
+    if (!area) {
         return;
     }
-    camera->setFieldOfView(fovy);
-    camera->playAnimation(animation);
+    auto animated = session.animatedCamera;
+    const auto decoded = resource::decodeCameraAnimation(node.cameraAnimation);
+    auto staticId = node.staticCameraId();
+    auto staticCamera = staticId ? area->findStaticCamera(*staticId) : nullptr;
+    session.held = false;
+    if (allowAnimation && decoded.inSelectionRange && animated && animated->hasModel()) {
+        session.selectedCamera = CameraType::Animated;
+        animated->setActive(true);
+        animated->playAnimation(node.cameraAnimation);
+        if (auto fov = node.cameraFieldOfViewOverride()) session.viewAngle = *fov;
+    } else if (staticCamera) {
+        session.selectedCamera = CameraType::Static;
+        session.staticCameraId = *staticId;
+        auto projection = std::static_pointer_cast<graphics::PerspectiveCamera>(staticCamera->cameraSceneNode()->camera());
+        session.viewAngle = glm::degrees(projection->fovy());
+    } else {
+        // Invalid angle-4 (including 10098) and explicit hold keep a finite
+        // previous view. A fresh session/missing destination gets actor framing.
+        // Exact vanilla invalid-angle controller state is not established.
+        if (session.hasShot && (node.cameraAngle == 4 || node.cameraAngle == 5)) {
+            auto previous = session.selectedCamera == CameraType::Static
+                                ? area->findStaticCamera(session.staticCameraId)
+                                : area->getCamera(session.selectedCamera);
+            auto target = area->getCamera(CameraType::Dialog);
+            if (previous && previous->sceneNode() && target && target->sceneNode()) {
+                target->sceneNode()->setLocalTransform(previous->sceneNode()->absoluteTransform());
+                session.held = true;
+            }
+        }
+        session.selectedCamera = CameraType::Dialog;
+        if (!session.held) session.viewAngle = 55.0f;
+    }
+    if (animated && session.selectedCamera != CameraType::Animated) animated->setActive(false);
+    session.hasShot = true;
+}
+
+CameraType Game::dialogueCameraSelection(const Conversation &conversation, uint64_t generation, int &cameraId) const {
+    cameraId = -1;
+    if (!isDialogueCameraCurrent(conversation, generation)) return _cameraType;
+    const auto &session = *_dialogueCameraSession;
+    cameraId = session.staticCameraId;
+    return session.selectedCamera;
+}
+
+bool Game::isDialogueCameraHeld(const Conversation &conversation, uint64_t generation) const {
+    return isDialogueCameraCurrent(conversation, generation) && _dialogueCameraSession->held;
 }
 
 AnimatedCamera *Game::getDialogueAnimatedCamera(const Area &area) const {

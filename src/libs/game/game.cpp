@@ -3745,13 +3745,30 @@ void Game::updateDialogueCamera(float dt) {
     auto type = getConversationCamera(cameraId);
     if (type == CameraType::Static) {
         _module->area()->setStaticCamera(cameraId);
+        if (!_module->area()->getCamera(CameraType::Static)) {
+            // A static record can be removed between node selection and the
+            // frame boundary. Never reuse a different borrowed static camera.
+            type = CameraType::Dialog;
+            _dialogueCameraSession->selectedCamera = type;
+            _dialogueCameraSession->held = false;
+            _dialogueCameraSession->viewAngle = 55.0f;
+        }
     }
     _cameraType = type;
     _conversation->refreshCameraPose();
-    if (auto camera = getActiveCamera()) {
-        // The private camera model has one advance, on the world animation
-        // clock. Conversation::pause only holds progression, not animation.
-        camera->update(_paused ? 0.0f : dt);
+    const auto &session = *_dialogueCameraSession;
+    const float animationTime = _paused ? 0.0f : dt;
+    if (auto animated = session.animatedCamera) {
+        if (type == CameraType::Animated) animated->setFieldOfView(session.viewAngle);
+        // Once selected, retained private playback keeps its world clock even
+        // during ordinary/static shots. SceneGraph never advances this model.
+        animated->update(animationTime);
+    }
+    if (auto camera = getActiveCamera(); camera && type != CameraType::Animated) {
+        if (type == CameraType::Dialog) {
+            static_cast<DialogCamera *>(camera)->setFieldOfView(session.viewAngle);
+        }
+        camera->update(animationTime);
     }
 }
 

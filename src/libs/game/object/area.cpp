@@ -1538,13 +1538,20 @@ Camera *Area::getCamera(CameraType type) {
 }
 
 void Area::setStaticCamera(int cameraId) {
-    for (auto &object : _objectsByType[ObjectType::Camera]) {
-        auto camera = static_cast<Camera *>(object.get());
-        if (camera->cameraId() == cameraId) {
-            _staticCamera = static_cast<StaticCamera *>(camera);
-            break;
+    _staticCamera = findStaticCamera(cameraId);
+}
+
+StaticCamera *Area::findStaticCamera(int cameraId) const {
+    auto found = _objectsByType.find(ObjectType::Camera);
+    if (found != _objectsByType.end()) {
+        for (const auto &object : found->second) {
+            auto camera = dynamic_cast<StaticCamera *>(object.get());
+            if (camera && camera->cameraId() == cameraId && camera->isRuntimeLive() && camera->sceneNode()) {
+                return camera;
+            }
         }
     }
+    return nullptr;
 }
 
 void Area::setThirdPartyCameraStyle(CameraStyleType type) {

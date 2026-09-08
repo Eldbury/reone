@@ -26,7 +26,7 @@ namespace reone {
 
 namespace game {
 
-const float kDefaultAnimCamFOV = 55.0f;
+const float kDefaultAnimCamFOV = 45.0f;
 
 class AnimatedCamera : public Camera {
 public:
@@ -56,6 +56,8 @@ public:
 
     void setModel(std::shared_ptr<graphics::Model> model);
     void setFieldOfView(float fovy);
+    bool hasModel() const { return _model != nullptr; }
+    void setActive(bool active);
 
 private:
     // The model node borrows its resource. Keep both until the owning dialogue
@@ -64,8 +66,11 @@ private:
     std::shared_ptr<scene::ModelSceneNode> _model;
     float _fovy {kDefaultAnimCamFOV};
     bool _retired {false};
+    bool _playbackStarted {false};
 
     float projectionFovy() const override;
+    float projectionNear() const override { return 0.1f; }
+    float projectionFar() const override { return 10000.0f; }
 };
 
 } // namespace game

@@ -46,11 +46,17 @@ public:
     }
     static void pick(Conversation &conversation) { conversation.pickReply(0); }
     static void publish(Conversation &conversation, uint64_t generation, float fov) {
-        conversation.playCamera(generation, fov, 1200);
+        Dialog::EntryReply node;
+        node.cameraAnimation = 1200;
+        node.camFieldOfView = fov;
+        conversation.presentCamera(generation, node);
     }
     static void staleCameraRequests(Game &game, Conversation &conversation, uint64_t generation) {
         game.setDialogueCameraModel(conversation, generation, nullptr);
-        game.playDialogueCamera(conversation, generation, 12, 1200);
+        Dialog::EntryReply node;
+        node.cameraAnimation = 1200;
+        node.camFieldOfView = 12;
+        game.selectDialogueCamera(conversation, generation, node, true);
         game.releaseDialogueCamera(conversation, generation, true);
     }
     static void tick(Game &game, float dt) {
@@ -164,6 +170,35 @@ std::shared_ptr<Dialog> dialogue(std::string name, bool animated, bool computer 
     return dialog;
 }
 
+std::shared_ptr<Dialog> cameraSequence(std::string name, size_t count, bool computer = false) {
+    auto result = dialogue(std::move(name), true, computer);
+    const auto prototype = result->entries.front();
+    result->entries.resize(count, prototype);
+    result->replies.resize(count);
+    for (size_t i = 0; i < count; ++i) {
+        result->entries[i].replies.front().index = i;
+        result->replies[i].text = "Continue";
+        if (i + 1 < count) {
+            Dialog::EntryReplyLink link;
+            link.index = i + 1;
+            result->replies[i].entries.push_back(link);
+        }
+    }
+    return result;
+}
+
+std::shared_ptr<graphics::Model> cameraWithClips(std::initializer_list<const char *> names) {
+    auto root = modelResource("template")->rootNode();
+    std::vector<std::shared_ptr<graphics::Animation>> animations;
+    for (const auto *name : names) {
+        animations.push_back(std::make_shared<graphics::Animation>(name, 2, 0, "root", root,
+                              std::vector<graphics::Animation::Event> {}));
+    }
+    auto result = std::make_shared<graphics::Model>("authored_camera", 0, root, animations, "", 1);
+    result->init();
+    return result;
+}
+
 class DialogueCameraSessionTest : public TestWithParam<GameID> {
 protected:
     void SetUp() override {
@@ -230,6 +265,27 @@ protected:
     void start(const std::shared_ptr<Dialog> &resource) {
         resources[resource->resRef] = resource;
         game->startDialog(player, resource->resRef);
+    }
+
+    std::shared_ptr<StaticCamera> addStatic(int id, float fov = 60) {
+        auto data = Gff::Builder().field(Gff::Field::newInt("CameraID", id))
+            .field(Gff::Field::newFloat("FieldOfView", fov))
+            .field(Gff::Field::newVector("Position", glm::vec3(20, 30, 40)))
+            .field(Gff::Field::newOrientation("Orientation", glm::quat(1, 0, 0, 0))).build();
+        auto camera = game->newStaticCamera();
+        camera->deserialize(*data);
+        area->add(camera);
+        graph->allocations.clear();
+        return camera;
+    }
+
+    float activeFov() {
+        return glm::degrees(std::static_pointer_cast<graphics::PerspectiveCamera>(graph->camera()->get().camera())->fovy());
+    }
+
+    void useCameraModel(std::shared_ptr<graphics::Model> model) {
+        cameraResource = std::move(model);
+        ON_CALL(engine.resourceModule().models(), get("authored_camera")).WillByDefault(Return(cameraResource));
     }
 
     void expectReleased(bool restored = true) {
@@ -343,9 +399,9 @@ TEST_P(DialogueCameraSessionTest, both_gui_handoffs_release_old_ownership_and_ig
     EXPECT_TRUE(oldModel.expired());
     EXPECT_EQ(computer, Access::active(*game));
     EXPECT_TRUE(Access::camera(*game));
-    // ComputerGUI's existing path does not attach/play an animated model.
-    // CAM1 gives it a fresh camera lifetime without adding that later behavior.
-    EXPECT_TRUE(graph->cameraModel.expired());
+    ASSERT_FALSE(graph->cameraModel.expired());
+    EXPECT_EQ("cut001w", graph->cameraModel.lock()->activeAnimationName());
+    EXPECT_FLOAT_EQ(0, graph->cameraModel.lock()->animationChannels().front().time);
     Access::finish(*dialog, generation);
     EXPECT_EQ(computer, Access::active(*game));
     EXPECT_TRUE(player->isInConversation());
@@ -592,7 +648,7 @@ TEST_P(DialogueCameraSessionTest, direct_area_destruction_retires_session_before
     EXPECT_FALSE(graph->camera());
 }
 
-TEST_P(DialogueCameraSessionTest, ordinary_computer_and_missing_model_finish_without_fallback_changes) {
+TEST_P(DialogueCameraSessionTest, ordinary_computer_and_missing_model_release_their_safe_presentation) {
     start(dialogue("terminal", false, true));
     Access::tick(*game, 0);
     Access::pick(*computer);
@@ -600,7 +656,9 @@ TEST_P(DialogueCameraSessionTest, ordinary_computer_and_missing_model_finish_wit
     ON_CALL(engine.resourceModule().models(), get("authored_camera")).WillByDefault(Return(nullptr));
     start(dialogue("missing", true));
     Access::tick(*game, 0);
-    EXPECT_EQ(GameCameraType::Animated, game->cameraType());
+    EXPECT_EQ(GameCameraType::Dialog, game->cameraType());
+    EXPECT_EQ(area->getCamera(GameCameraType::Dialog)->sceneNode().get(), &graph->camera()->get());
+    EXPECT_TRUE(graph->cameraModel.expired());
     EXPECT_FALSE(Access::camera(*game)->isAnimationFinished());
     Access::finish(*dialog);
     expectReleased();
@@ -630,6 +688,7 @@ TEST_P(DialogueCameraSessionTest, security_camera_finish_restores_gameplay_and_d
     graph->allocations.clear(); // Static camera is Area-owned, not session-owned.
     auto resource = dialogue("security", false, true);
     resource->entries.front().cameraId = 1;
+    resource->entries.front().cameraAngle = 6;
     start(resource);
     Access::tick(*game, 0);
     EXPECT_EQ(GameCameraType::Static, game->cameraType());
@@ -731,6 +790,240 @@ TEST_P(DialogueCameraSessionTest, session_model_keeps_existing_single_manual_tic
     EXPECT_TRUE(camera->isAnimationFinished()); // The manual path really did advance it.
     Access::finish(*dialog);
     expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, per_node_selection_supports_static_zero_and_keeps_one_session_across_handoffs) {
+    auto staticCamera = addStatic(0, 62);
+    auto sequence = cameraSequence("handoffs", 4);
+    sequence->entries[0].cameraAngle = 6; // Animated gate precedes static eligibility.
+    sequence->entries[1].cameraAnimation = 0;
+    sequence->entries[1].cameraAngle = 6;
+    sequence->entries[2].cameraAnimation = 0;
+    sequence->entries[2].cameraAngle = 2;
+    start(sequence);
+    auto camera = Access::camera(*game);
+    auto model = graph->cameraModel.lock();
+    Access::tick(*game, 0.25f);
+    EXPECT_EQ(GameCameraType::Animated, game->cameraType());
+    Access::pick(*dialog);
+    Access::tick(*game, 0.25f);
+    EXPECT_EQ(GameCameraType::Static, game->cameraType());
+    EXPECT_EQ(staticCamera->sceneNode().get(), &graph->camera()->get());
+    EXPECT_EQ(nullptr, camera->sceneNode()->parent());
+    EXPECT_FLOAT_EQ(0.5f, model->animationChannels().front().time);
+    Access::pick(*dialog);
+    Access::tick(*game, 0.25f);
+    EXPECT_EQ(GameCameraType::Dialog, game->cameraType());
+    EXPECT_EQ(nullptr, camera->sceneNode()->parent());
+    Access::pick(*dialog);
+    Access::tick(*game, 0.25f);
+    EXPECT_EQ(GameCameraType::Animated, game->cameraType());
+    EXPECT_EQ(camera, Access::camera(*game));
+    EXPECT_EQ(model, graph->cameraModel.lock());
+    EXPECT_NE(nullptr, camera->sceneNode()->parent());
+    EXPECT_FLOAT_EQ(1, model->animationChannels().front().time);
+    model.reset();
+    Access::pick(*dialog);
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, all_camera_bands_use_cam2_names_and_loop_metadata) {
+    useCameraModel(cameraWithClips({"cut001", "cut001w", "cut001l", "cut001wl"}));
+    auto sequence = cameraSequence("bands", 4);
+    const int ordinals[] {1000, 1200, 1400, 1600};
+    const char *names[] {"cut001", "cut001w", "cut001l", "cut001wl"};
+    for (int i = 0; i < 4; ++i) sequence->entries[i].cameraAnimation = ordinals[i];
+    start(sequence);
+    for (int i = 0; i < 4; ++i) {
+        SCOPED_TRACE(ordinals[i]);
+        Access::tick(*game, 0.25f);
+        auto model = graph->cameraModel.lock();
+        EXPECT_EQ(GameCameraType::Animated, game->cameraType());
+        EXPECT_EQ(names[i], model->activeAnimationName());
+        EXPECT_EQ(i >= 2, bool(model->animationChannels().front().properties.flags & scene::AnimationFlags::loop));
+        EXPECT_FLOAT_EQ(0.25f, model->animationChannels().front().time);
+        Access::pick(*dialog);
+    }
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, missing_named_clip_and_gap_retain_animated_playback_without_suffix_aliases) {
+    auto sequence = cameraSequence("intro_metadata", 3);
+    sequence->entries[1].cameraAnimation = 1000; // K2 intro's missing CUT001.
+    sequence->entries[2].cameraAnimation = 1128; // Accepted literal none, also missing.
+    start(sequence);
+    auto model = graph->cameraModel.lock();
+    for (int i = 0; i < 3; ++i) {
+        Access::tick(*game, 0.25f);
+        EXPECT_EQ(GameCameraType::Animated, game->cameraType());
+        EXPECT_EQ("cut001w", model->activeAnimationName());
+        EXPECT_FLOAT_EQ((i + 1) * 0.25f, model->animationChannels().front().time);
+        if (i < 2) Access::pick(*dialog);
+    }
+    model.reset();
+    Access::pick(*dialog);
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, default_clip_and_missing_first_clip_keep_a_valid_authored_hook) {
+    useCameraModel(cameraWithClips({"default"}));
+    start(dialogue("default_fallback", true));
+    Access::tick(*game, 0.25f);
+    EXPECT_EQ(GameCameraType::Animated, game->cameraType());
+    EXPECT_EQ("default", graph->cameraModel.lock()->activeAnimationName());
+    useCameraModel(cameraWithClips({}));
+    start(dialogue("no_clips", true));
+    Access::tick(*game, 0.25f);
+    EXPECT_EQ(GameCameraType::Animated, game->cameraType());
+    EXPECT_TRUE(graph->cameraModel.lock()->activeAnimationName().empty());
+    EXPECT_EQ(glm::vec3(3, 4, 5), listener);
+    Access::finish(*dialog);
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, same_clip_reuses_running_phase_and_restarts_after_completion) {
+    auto sequence = cameraSequence("repeat_clip", 3);
+    start(sequence);
+    auto model = graph->cameraModel.lock();
+    Access::tick(*game, 0.5f);
+    Access::pick(*dialog);
+    EXPECT_FLOAT_EQ(0.5f, model->animationChannels().front().time);
+    Access::tick(*game, 2);
+    EXPECT_TRUE(Access::camera(*game)->isAnimationFinished());
+    Access::pick(*dialog);
+    EXPECT_FLOAT_EQ(0, model->animationChannels().front().time);
+    EXPECT_FALSE(Access::camera(*game)->isAnimationFinished());
+}
+
+TEST_P(DialogueCameraSessionTest, invalid_angle_four_and_explicit_hold_keep_previous_view_with_no_gameplay_flash) {
+    auto sequence = cameraSequence("hold", 3);
+    sequence->entries[1].cameraAnimation = 10098;
+    sequence->entries[1].cameraAngle = 4;
+    sequence->entries[2].cameraAnimation = 0;
+    sequence->entries[2].cameraAngle = 5;
+    start(sequence);
+    Access::tick(*game, 0.25f);
+    auto pose = graph->camera()->get().absoluteTransform();
+    for (int i = 0; i < 2; ++i) {
+        Access::pick(*dialog);
+        Access::tick(*game, 0.25f);
+        EXPECT_EQ(GameCameraType::Dialog, game->cameraType());
+        EXPECT_EQ(pose, graph->camera()->get().absoluteTransform());
+        EXPECT_NE(gameplayCamera.get(), &graph->camera()->get());
+    }
+}
+
+TEST_P(DialogueCameraSessionTest, missing_model_hook_static_id_and_fresh_hold_fall_back_to_ordinary_camera) {
+    useCameraModel(nullptr);
+    start(dialogue("missing_model", true));
+    Access::tick(*game, 0);
+    EXPECT_EQ(GameCameraType::Dialog, game->cameraType());
+    auto root = std::make_shared<graphics::ModelNode>(0, "root", glm::vec3(0), glm::quat(1, 0, 0, 0), true, nullptr);
+    useCameraModel(std::make_shared<graphics::Model>("no_hook", 0, root,
+                    std::vector<std::shared_ptr<graphics::Animation>> {}, "", 1));
+    start(dialogue("missing_hook", true));
+    Access::tick(*game, 0);
+    EXPECT_EQ(GameCameraType::Dialog, game->cameraType());
+    EXPECT_TRUE(graph->cameraModel.expired());
+    for (uint32_t angle : {4, 5, 6}) {
+        auto resource = dialogue("fresh_fallback", false);
+        resource->entries[0].cameraAngle = angle;
+        resource->entries[0].cameraId = 999;
+        start(resource);
+        Access::tick(*game, 0);
+        EXPECT_EQ(GameCameraType::Dialog, game->cameraType());
+        EXPECT_NE(gameplayCamera.get(), &graph->camera()->get());
+    }
+    Access::finish(*dialog);
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, dialogue_fov_inherits_the_previous_view_and_publishes_at_the_frame_boundary) {
+    addStatic(0, 63);
+    auto sequence = cameraSequence("fov_handoff", 8);
+    sequence->entries[0].camFieldOfView = 0;
+    sequence->entries[1].camFieldOfView = 34.5f;
+    sequence->entries[2].camFieldOfView = -1;
+    sequence->entries[3].cameraAnimation = 0;
+    sequence->entries[3].cameraAngle = 1;
+    sequence->entries[4].camFieldOfView = 0;
+    sequence->entries[5].cameraAnimation = 0;
+    sequence->entries[5].cameraAngle = 6;
+    sequence->entries[6].camFieldOfView = -1;
+    sequence->entries[7].cameraAnimation = 10098;
+    sequence->entries[7].cameraAngle = 5;
+    const float expected[] {45, 34.5f, 34.5f, 55, 55, 63, 63, 63};
+    start(sequence);
+    for (int i = 0; i < 8; ++i) {
+        SCOPED_TRACE(i);
+        Access::tick(*game, 0);
+        EXPECT_NEAR(expected[i], activeFov(), 1e-4f);
+        Access::pick(*dialog);
+        // Selection queues presentation data; it doesn't publish a new lens
+        // halfway through a GUI/script callback. Finish restores immediately.
+        if (i < 7) EXPECT_NEAR(expected[i], activeFov(), 1e-4f);
+    }
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, unspecified_and_malformed_dlg_fov_never_become_invalid_projection) {
+    for (float fov : {0.0f, -1.0f, 180.0f, std::numeric_limits<float>::infinity(),
+                     std::numeric_limits<float>::quiet_NaN()}) {
+        auto resource = dialogue("safe_fov", true);
+        resource->entries[0].camFieldOfView = fov;
+        start(resource);
+        Access::tick(*game, 0);
+        EXPECT_NEAR(45, activeFov(), 1e-4f);
+    }
+    Access::finish(*dialog);
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, invalid_static_fov_has_a_safe_projection_and_does_not_use_dlg_inheritance) {
+    auto staticCamera = addStatic(0, -1);
+    auto sequence = cameraSequence("static_fov", 2);
+    sequence->entries[0].camFieldOfView = 34.5f;
+    sequence->entries[1].cameraAnimation = 0;
+    sequence->entries[1].cameraAngle = 6;
+    start(sequence);
+    Access::tick(*game, 0);
+    EXPECT_NEAR(34.5f, activeFov(), 1e-4f);
+    Access::pick(*dialog);
+    Access::tick(*game, 0);
+    EXPECT_NEAR(45, activeFov(), 1e-4f);
+    EXPECT_FLOAT_EQ(-1, staticCamera->fieldOfView()); // Raw GIT data preserved.
+}
+
+TEST_P(DialogueCameraSessionTest, animated_projection_keeps_authored_vertical_fov_and_clip_planes_on_resize) {
+    start(dialogue("projection", true));
+    Access::tick(*game, 0);
+    for (auto size : {glm::ivec2(640, 480), glm::ivec2(1920, 1080), glm::ivec2(0, 0)}) {
+        engine.options().graphics.width = size.x;
+        engine.options().graphics.height = size.y;
+        Access::tick(*game, 0);
+        auto projection = std::static_pointer_cast<graphics::PerspectiveCamera>(graph->camera()->get().camera());
+        EXPECT_NEAR(35, activeFov(), 1e-4f);
+        EXPECT_FLOAT_EQ(0.1f, projection->zNear());
+        EXPECT_FLOAT_EQ(10000, projection->zFar());
+        EXPECT_FLOAT_EQ(float(std::max(1, size.x)) / std::max(1, size.y), projection->aspect());
+    }
+}
+
+TEST_P(DialogueCameraSessionTest, missing_static_lookup_clears_old_selection_and_removed_feed_falls_back) {
+    auto staticCamera = addStatic(0);
+    area->setStaticCamera(0);
+    ASSERT_EQ(staticCamera.get(), area->getCamera(GameCameraType::Static));
+    area->setStaticCamera(999);
+    EXPECT_EQ(nullptr, area->getCamera(GameCameraType::Static));
+    auto resource = dialogue("removed_feed", false, true);
+    resource->entries[0].cameraAngle = 6;
+    start(resource);
+    Access::tick(*game, 0);
+    EXPECT_EQ(staticCamera->sceneNode().get(), &graph->camera()->get());
+    ASSERT_TRUE(area->releaseObject(staticCamera));
+    Access::tick(*game, 0);
+    EXPECT_EQ(GameCameraType::Dialog, game->cameraType());
+    EXPECT_NE(staticCamera->sceneNode().get(), &graph->camera()->get());
 }
 
 TEST_P(DialogueCameraSessionTest, game_pause_freezes_private_camera_with_world_animation) {

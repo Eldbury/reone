@@ -116,6 +116,12 @@ float DialogCamera::projectionFovy() const {
     return glm::radians(_style.viewAngle);
 }
 
+void DialogCamera::setFieldOfView(float fovy) {
+    if (_style.viewAngle == fovy) return;
+    _style.viewAngle = fovy;
+    rebuildProjection();
+}
+
 void DialogCamera::setSpeakerPosition(glm::vec3 position) {
     if (_speakerPosition != position) {
         _speakerPosition = std::move(position);

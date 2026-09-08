@@ -233,21 +233,21 @@ protected:
     std::unique_ptr<TestConversation> _conversation;
 };
 
-TEST_F(ConversationTest, ordinary_static_dialogue_keeps_its_own_gui) {
+TEST_F(ConversationTest, unavailable_static_camera_keeps_the_dialogue_gui) {
     auto dialog = makeDialog();
     dialog->entries[0].cameraId = 1;
+    dialog->entries[0].cameraAngle = 6;
     auto gui = std::make_shared<NiceMock<gui::MockGUI>>();
     _conversation->setGUIForTest(gui);
     EXPECT_CALL(_engine.guiModule().guis(), get(_, _)).Times(0);
     _conversation->start(dialog, nullptr);
     int cameraId = 0;
-    EXPECT_EQ(_conversation->getCamera(cameraId), CameraType::Static);
-    EXPECT_EQ(cameraId, 1);
+    EXPECT_EQ(_conversation->getCamera(cameraId), CameraType::Dialog);
     EXPECT_CALL(*gui, render()).Times(1);
     _conversation->render();
 }
 
-TEST_F(ConversationTest, animated_dialogue_keeps_its_own_gui) {
+TEST_F(ConversationTest, unavailable_animated_camera_keeps_the_dialogue_gui) {
     auto dialog = makeDialog();
     dialog->cameraModel = "camera_model";
     auto gui = std::make_shared<NiceMock<gui::MockGUI>>();
@@ -255,19 +255,20 @@ TEST_F(ConversationTest, animated_dialogue_keeps_its_own_gui) {
     EXPECT_CALL(_engine.guiModule().guis(), get(_, _)).Times(0);
     _conversation->start(dialog, nullptr);
     int cameraId = 0;
-    EXPECT_EQ(_conversation->getCamera(cameraId), CameraType::Animated);
+    EXPECT_EQ(_conversation->getCamera(cameraId), CameraType::Dialog);
     EXPECT_CALL(*gui, render()).Times(1);
     _conversation->render();
 }
 
-TEST_F(ConversationTest, authored_camera_queries_do_not_change_the_cam1_live_selector) {
+TEST_F(ConversationTest, unavailable_resources_and_invalid_ordinals_do_not_select_unusable_cameras) {
     auto dialog = makeDialog();
     dialog->entries[0].cameraId = 0;
     dialog->entries[0].cameraAngle = 6;
     EXPECT_EQ(std::optional<int>(0), dialog->entries[0].staticCameraId());
     _conversation->start(dialog, nullptr);
     int cameraId = -1;
-    // CAM2 preserves data; consuming angle eligibility and ID zero is deferred.
+    // Eligibility is preserved, but this fixture has no Area/static record.
+    // Actual static ID zero selection is covered by Game/GUI integration.
     EXPECT_EQ(CameraType::Dialog, _conversation->getCamera(cameraId));
 
     dialog = makeDialog();
@@ -275,15 +276,14 @@ TEST_F(ConversationTest, authored_camera_queries_do_not_change_the_cam1_live_sel
     dialog->entries[0].cameraAngle = 4;
     EXPECT_FALSE(dialog->entries[0].staticCameraId());
     _conversation->start(dialog, nullptr);
-    EXPECT_EQ(CameraType::Static, _conversation->getCamera(cameraId));
-    EXPECT_EQ(5, cameraId);
+    EXPECT_EQ(CameraType::Dialog, _conversation->getCamera(cameraId));
+    EXPECT_EQ(5, dialog->entries[0].cameraId);
 
     dialog = makeDialog();
     dialog->cameraModel = "camera_model";
     dialog->entries[0].cameraAnimation = 10098;
     _conversation->start(dialog, nullptr);
-    // Neither the pure decoder's gate nor clip-existence rules run here yet.
-    EXPECT_EQ(CameraType::Animated, _conversation->getCamera(cameraId));
+    EXPECT_EQ(CameraType::Dialog, _conversation->getCamera(cameraId));
     EXPECT_EQ(10098, dialog->entries[0].cameraAnimation);
 }
 

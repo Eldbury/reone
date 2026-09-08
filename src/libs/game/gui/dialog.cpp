@@ -208,11 +208,9 @@ DialogGUI::~DialogGUI() {
 }
 
 void DialogGUI::onStart() {
-    const auto generation = conversationGeneration();
     _currentSpeaker = owner();
     _heldCutParticipants.clear();
     loadStuntParticipants();
-    setCameraModel(generation);
 }
 
 void DialogGUI::loadStuntParticipants() {
@@ -408,26 +406,24 @@ void DialogGUI::updateCamera() {
         return;
     }
 
-    if (_dialog->cameraModel.empty()) {
+    int cameraId;
+    if (getCamera(cameraId) == CameraType::Dialog && !isCameraHeld()) {
         std::shared_ptr<Creature> player(_game.party().player());
         glm::vec3 listenerPosition(player ? getTalkPosition(*player) : glm::vec3(0.0f));
         auto speaker = _currentSpeaker.resolve();
         glm::vec3 speakerPosition(
             speaker ? getTalkPosition(*speaker) : glm::vec3(0.0f));
         auto camera = area->getCamera<DialogCamera>(CameraType::Dialog);
+        if (!camera) return;
         camera->setListenerPosition(listenerPosition);
         camera->setSpeakerPosition(speakerPosition);
         camera->setVariant(getRandomCameraVariant());
-    } else {
-        playCamera(conversationGeneration(),
-                   _currentEntry->camFieldOfView != 0.0f ? _currentEntry->camFieldOfView : kDefaultAnimCamFOV,
-                   _currentEntry->cameraAnimation);
     }
 }
 
 glm::vec3 DialogGUI::getTalkPosition(const Object &object) const {
     auto node = object.sceneNode();
-    if (node->type() != SceneNodeType::Model) {
+    if (!node || node->type() != SceneNodeType::Model) {
         return object.position();
     }
 
@@ -717,9 +713,9 @@ void DialogGUI::refreshCameraPose() {
 
     // Dialog camera follows the current speaker, if any
     auto speaker = _currentSpeaker.resolve();
-    if (speaker && _game.cameraType() == CameraType::Dialog) {
+    if (speaker && _game.cameraType() == CameraType::Dialog && !isCameraHeld()) {
         auto camera = _game.module()->area()->getCamera<DialogCamera>(CameraType::Dialog);
-        camera->setSpeakerPosition(getTalkPosition(*speaker));
+        if (camera) camera->setSpeakerPosition(getTalkPosition(*speaker));
     }
 }
 

@@ -54,6 +54,7 @@ public:
     void setSpeakerPosition(glm::vec3 position);
     void setListenerPosition(glm::vec3 position);
     void setVariant(Variant variant);
+    void setFieldOfView(float fovy);
 
 private:
     CameraStyle _style;

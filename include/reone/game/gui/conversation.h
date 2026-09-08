@@ -78,7 +78,8 @@ protected:
     bool isCurrentConversation(uint64_t generation) const;
     uint64_t conversationGeneration() const { return _generation; }
     void setCameraModel(uint64_t generation);
-    void playCamera(uint64_t generation, float fovy, int animation);
+    void presentCamera(uint64_t generation, const resource::Dialog::EntryReply &node, bool allowAnimation = true);
+    bool isCameraHeld() const;
     std::shared_ptr<resource::Dialog> _dialog;
     RuntimeObjectRef<Object> _owner;
     std::shared_ptr<graphics::Model> _cameraModel;

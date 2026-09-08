@@ -182,6 +182,8 @@ public:
 
     Camera *getCamera(CameraType type);
 
+    StaticCamera *findStaticCamera(int cameraId) const;
+
     void setStaticCamera(int cameraId);
     void setThirdPartyCameraStyle(CameraStyleType type);
 

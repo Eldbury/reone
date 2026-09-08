@@ -75,6 +75,7 @@ std::shared_ptr<Dialog> computerDialog(bool camera = true, bool automatic = fals
     auto &first = dialog->entries[0];
     first.text = "Camera menu";
     first.cameraId = camera ? 1 : 0;
+    first.cameraAngle = camera ? 6 : 0;
     first.delay = 2;
     first.replies.push_back({});
     if (!automatic) {
@@ -106,11 +107,25 @@ class ComputerGUITest : public TestWithParam<GameID> {
 protected:
     void SetUp() override {
         engine.init();
+        auto &svc = engine.services();
+        graph = std::make_unique<scene::SceneGraph>(kSceneMain, pipelineFactory, engine.options().graphics,
+                                                   svc.graphics, svc.audio, svc.resource);
+        ON_CALL(engine.sceneModule().graphs(), get(_)).WillByDefault(ReturnRef(*graph));
         game = std::make_unique<Game>(GetParam(), std::filesystem::path {}, engine.options(), engine.services(), console);
         game->initLocalServices();
+        auto area = game->newArea();
+        TestGameModule::setActiveModuleArea(*game, area);
+        area->initCameras(glm::vec3(0), 0);
+        for (int id : {1, 3}) {
+            auto data = Gff::Builder().field(Gff::Field::newInt("CameraID", id))
+                .field(Gff::Field::newFloat("FieldOfView", 60))
+                .field(Gff::Field::newOrientation("Orientation", glm::quat(1, 0, 0, 0))).build();
+            auto cameraObject = game->newStaticCamera();
+            cameraObject->deserialize(*data);
+            area->add(cameraObject);
+        }
         normal = std::make_shared<NiceMock<MockGUI>>();
         camera = std::make_shared<NiceMock<MockGUI>>();
-        auto &svc = engine.services();
         returnControl = std::make_shared<Label>(*camera, svc.scene.graphs, svc.graphics, svc.resource);
         EXPECT_CALL(*camera, findControl("LBL_RETURN")).WillOnce(Return(returnControl));
         EXPECT_CALL(*camera, setBackground(_)).Times(0);
@@ -140,6 +155,8 @@ protected:
 
     TestEngine engine;
     ComputerConsole console;
+    scene::MockRenderPipelineFactory pipelineFactory;
+    std::unique_ptr<scene::SceneGraph> graph;
     std::unique_ptr<Game> game;
     std::shared_ptr<NiceMock<MockGUI>> normal;
     std::shared_ptr<NiceMock<MockGUI>> camera;
@@ -167,13 +184,14 @@ TEST_P(ComputerGUITest, static_entry_renders_only_camera_and_isolates_input) {
     EXPECT_EQ(computer->ends, 0);
 }
 
-TEST_P(ComputerGUITest, animated_camera_takes_precedence_over_static_id) {
+TEST_P(ComputerGUITest, missing_animated_model_falls_back_to_authored_static_camera) {
     auto dialog = computerDialog();
     dialog->cameraModel = "camera_model";
+    dialog->entries[0].cameraAnimation = 1200;
     computer->start(dialog, nullptr);
     int id = 0;
-    EXPECT_EQ(computer->getCamera(id), CameraType::Animated);
-    expectRender(false);
+    EXPECT_EQ(computer->getCamera(id), CameraType::Static);
+    expectRender(true);
 }
 
 TEST_P(ComputerGUITest, return_auto_selects_empty_reply_once_without_replaying_scripts) {
@@ -247,6 +265,7 @@ TEST_P(ComputerGUITest, conversation_timer_expires_camera_with_multiple_replies)
 TEST_P(ComputerGUITest, consecutive_camera_entries_keep_the_next_feed_visible) {
     auto dialog = computerDialog(true, true);
     dialog->entries[1].cameraId = 3;
+    dialog->entries[1].cameraAngle = 6;
     computer->start(dialog, nullptr);
     computer->handle(key(input::KeyCode::Return));
     EXPECT_EQ(computer->entry(), &dialog->entries[1]);

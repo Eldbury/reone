@@ -18,11 +18,14 @@
 #include "reone/game/object/camera/animated.h"
 
 #include "reone/game/di/services.h"
+#include "reone/graphics/animation.h"
 #include "reone/graphics/types.h"
+#include "reone/resource/cameraclip.h"
 #include "reone/scene/di/services.h"
 #include "reone/scene/graphs.h"
 #include "reone/scene/node/camera.h"
 #include "reone/scene/node/model.h"
+#include "reone/system/logutil.h"
 
 using namespace reone::graphics;
 using namespace reone::scene;
@@ -45,6 +48,7 @@ void AnimatedCamera::retire() {
 }
 
 void AnimatedCamera::resetPlayback() {
+    _playbackStarted = false;
     if (_model && _sceneNode) {
         _model->detach(*_sceneNode);
     }
@@ -82,27 +86,24 @@ void AnimatedCamera::update(float dt) {
     }
     Camera::update(dt);
 
-    if (_model) {
+    if (_model && _playbackStarted) {
         _model->update(dt);
     }
 }
 
-static const std::string &getAnimationName(int animNumber) {
-    static std::map<int, std::string> nameByNumber;
-
-    auto maybeName = nameByNumber.find(animNumber);
-    if (maybeName != nameByNumber.end()) {
-        return maybeName->second;
-    }
-    std::string name(str(boost::format("cut%03dw") % (animNumber - 1200 + 1)));
-
-    return nameByNumber.insert(std::make_pair(animNumber, std::move(name))).first->second;
-}
-
 void AnimatedCamera::playAnimation(int animNumber) {
-    if (_model) {
-        _model->playAnimation(reone::game::getAnimationName(animNumber));
+    const auto decoded = resource::decodeCameraAnimation(animNumber);
+    if (!_model || !decoded.inSelectionRange) return;
+    _playbackStarted = true;
+    const auto clip = resource::findCameraClip(*_modelResource, decoded);
+    if (clip.animation) {
+        const bool restart = _model->isAnimationFinished();
+        auto properties = AnimationProperties::fromFlags(decoded.looping ? AnimationFlags::loop : 0);
+        _model->playAnimation(*clip.animation, nullptr, properties);
+        if (restart) _model->restartAnimation(clip.animation->name());
     }
+    // Missing named/default clips retain the current channel/pose. Selection
+    // succeeded with a valid model/hook; this is not a gameplay-camera switch.
 }
 
 bool AnimatedCamera::isAnimationFinished() const {
@@ -116,6 +117,10 @@ void AnimatedCamera::setModel(std::shared_ptr<Model> model) {
 
     resetPlayback();
     if (model) {
+        if (!model->getNodeByNameRecursive("camerahook")) {
+            warn("Dialogue camera model has no camerahook: " + model->name());
+            return;
+        }
         auto &scene = _services.scene.graphs.get(_sceneName);
         // Resource loading may reenter dialogue replacement. Keep the resource
         // and new tree local until we know this camera still owns playback.
@@ -129,7 +134,20 @@ void AnimatedCamera::setModel(std::shared_ptr<Model> model) {
         if (!_model || !_sceneNode) {
             throw std::runtime_error("Unable to create dialogue camera model");
         }
-        _model->attach("camerahook", *_sceneNode);
+    }
+}
+
+void AnimatedCamera::setActive(bool active) {
+    if (_retired || !_model || !_sceneNode) return;
+    if (active) {
+        if (!_sceneNode->parent()) {
+            _sceneNode->setLocalTransform(glm::mat4(1));
+            _model->attach("camerahook", *_sceneNode);
+        }
+    } else if (_sceneNode->parent()) {
+        auto pose = _sceneNode->absoluteTransform();
+        _model->detach(*_sceneNode);
+        _sceneNode->setLocalTransform(pose);
     }
 }
 

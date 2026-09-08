@@ -996,6 +996,11 @@ private:
         RuntimeObjectRef<Area> area;
         CameraType gameplayCamera {CameraType::ThirdPerson};
         std::shared_ptr<AnimatedCamera> animatedCamera;
+        CameraType selectedCamera {CameraType::Dialog};
+        int staticCameraId {-1};
+        bool hasShot {false};
+        bool held {false};
+        float viewAngle {45.0f};
     };
     std::optional<DialogueCameraSession> _dialogueCameraSession;
     uint64_t _conversationGeneration {0};
@@ -1003,7 +1008,10 @@ private:
     uint64_t acquireDialogueCamera(Conversation &conversation);
     void initializeDialogueCamera(Conversation &conversation, uint64_t generation);
     void setDialogueCameraModel(Conversation &conversation, uint64_t generation, std::shared_ptr<graphics::Model> model);
-    void playDialogueCamera(Conversation &conversation, uint64_t generation, float fovy, int animation);
+    void selectDialogueCamera(Conversation &conversation, uint64_t generation,
+                              const resource::Dialog::EntryReply &node, bool allowAnimation);
+    CameraType dialogueCameraSelection(const Conversation &conversation, uint64_t generation, int &cameraId) const;
+    bool isDialogueCameraHeld(const Conversation &conversation, uint64_t generation) const;
     void updateCameraListener(Camera &camera);
     bool ownsDialogueCamera(const Conversation &conversation, uint64_t generation) const;
     bool isDialogueCameraCurrent(const Conversation &conversation, uint64_t generation) const;

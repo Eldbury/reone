@@ -94,10 +94,14 @@ void Conversation::setCameraModel(uint64_t generation) {
     }
 }
 
-void Conversation::playCamera(uint64_t generation, float fovy, int animation) {
+void Conversation::presentCamera(uint64_t generation, const Dialog::EntryReply &node, bool allowAnimation) {
     if (isCurrentConversation(generation)) {
-        _game.playDialogueCamera(*this, generation, fovy, animation);
+        _game.selectDialogueCamera(*this, generation, node, allowAnimation);
     }
+}
+
+bool Conversation::isCameraHeld() const {
+    return _game.isDialogueCameraHeld(*this, _generation);
 }
 
 void Conversation::start(const std::shared_ptr<Dialog> &dialog, const std::shared_ptr<Object> &owner) {
@@ -136,6 +140,10 @@ void Conversation::start(const std::shared_ptr<Dialog> &dialog, const std::share
             return;
         }
         onStart();
+        if (!isCurrentConversation(generation)) {
+            return;
+        }
+        setCameraModel(generation);
         if (!isCurrentConversation(generation)) {
             return;
         }
@@ -416,6 +424,7 @@ void Conversation::loadEntry(int index, bool start) {
     }
 
     scheduleEndOfEntry();
+    presentCamera(generation, *_currentEntry);
     onLoadEntry();
     if (!isCurrentConversation(generation)) {
         return;
@@ -692,18 +701,7 @@ void Conversation::update(float dt) {
 }
 
 CameraType Conversation::getCamera(int &cameraId) const {
-    if (!isCurrentConversation() || !_currentEntry) {
-        return _game.cameraType();
-    }
-    std::string cameraModel(_dialog->cameraModel);
-    if (!cameraModel.empty()) {
-        return CameraType::Animated;
-    }
-    if (_currentEntry->cameraId != 0) {
-        cameraId = _currentEntry->cameraId;
-        return CameraType::Static;
-    }
-    return CameraType::Dialog;
+    return _game.dialogueCameraSelection(*this, _generation, cameraId);
 }
 
 void Conversation::pause() {

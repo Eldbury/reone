@@ -10,6 +10,7 @@
 #include "reone/graphics/animation.h"
 #include "reone/graphics/model.h"
 #include "reone/resource/cameraanimation.h"
+#include "reone/resource/cameraclip.h"
 
 #include "../fixtures/cameraanimations.h"
 
@@ -117,4 +118,80 @@ TEST(CameraAnimationDecoder, gated_mapped_and_present_are_separate_facts_for_k2_
     EXPECT_FLOAT_EQ(23.6667f, clip->length());
     // Decoding does not inspect or mutate the asset and cannot make a fallback.
     EXPECT_EQ("cut001", decodeCameraAnimation(1000).name);
+}
+
+namespace {
+std::shared_ptr<graphics::Animation> cameraClip(std::string name, float length = 2.0f) {
+    return std::make_shared<graphics::Animation>(std::move(name), length, 0, "root", nullptr,
+                                                std::vector<graphics::Animation::Event> {});
+}
+}
+
+TEST(CameraClipLookup, uses_literal_names_case_insensitively_without_suffix_aliases) {
+    auto wide = cameraClip("CUT001W", 23.6667f);
+    graphics::Model model("001ebocam", 0, nullptr, {wide}, "", 1);
+    auto found = findCameraClip(model, decodeCameraAnimation(1200));
+    EXPECT_EQ(wide, found.animation);
+    EXPECT_FALSE(found.usedDefault);
+    EXPECT_FLOAT_EQ(23.6667f, found.duration());
+    for (int ordinal : {1000, 1400, 1600, 1128, 10098}) {
+        SCOPED_TRACE(ordinal);
+        auto missing = findCameraClip(model, decodeCameraAnimation(ordinal));
+        EXPECT_FALSE(missing.animation);
+        EXPECT_FALSE(missing.usedDefault);
+        EXPECT_FLOAT_EQ(0, missing.duration());
+    }
+}
+
+TEST(CameraClipLookup, named_clip_precedes_default_and_model_precedes_supermodel) {
+    auto own = cameraClip("cut001");
+    auto inherited = cameraClip("cut001", 4);
+    auto super = std::make_shared<graphics::Model>("super", 0, nullptr,
+        std::vector<std::shared_ptr<graphics::Animation>> {inherited, cameraClip("default")}, "", 1);
+    graphics::Model model("camera", 0, nullptr, {own}, "super", 1);
+    model.setSuperModel(super);
+    EXPECT_EQ(own, findCameraClip(model, decodeCameraAnimation(1000)).animation);
+    graphics::Model child("camera_without_named_clip", 0, nullptr, {}, "super", 1);
+    child.setSuperModel(super);
+    auto result = findCameraClip(child, decodeCameraAnimation(1000));
+    EXPECT_EQ(inherited, result.animation);
+    EXPECT_FALSE(result.usedDefault);
+}
+
+TEST(CameraClipLookup, recurses_before_literal_default_and_never_falls_back_outside_selection_range) {
+    auto fallback = cameraClip("DEFAULT", 3);
+    auto super = std::make_shared<graphics::Model>("super", 0, nullptr,
+        std::vector<std::shared_ptr<graphics::Animation>> {fallback}, "", 1);
+    graphics::Model model("camera", 0, nullptr, {cameraClip("default", 10)}, "super", 1);
+    model.setSuperModel(super);
+    for (int ordinal : {1000, 1128, 1400, 1599, 1727}) {
+        SCOPED_TRACE(ordinal);
+        auto result = findCameraClip(model, decodeCameraAnimation(ordinal));
+        EXPECT_EQ(fallback, result.animation);
+        EXPECT_TRUE(result.usedDefault);
+        EXPECT_FLOAT_EQ(3, result.duration());
+    }
+    for (int ordinal : {0, 999, 1728, 10098, 65535}) {
+        EXPECT_FALSE(findCameraClip(model, decodeCameraAnimation(ordinal)).animation);
+    }
+}
+
+TEST(CameraClipLookup, none_is_a_literal_mapped_name_and_not_the_playback_clear_command) {
+    auto none = cameraClip("none");
+    graphics::Model model("mod_camera", 0, nullptr, {none, cameraClip("default")}, "", 1);
+    auto result = findCameraClip(model, decodeCameraAnimation(1528));
+    EXPECT_EQ(none, result.animation);
+    EXPECT_FALSE(result.usedDefault);
+    EXPECT_TRUE(decodeCameraAnimation(1528).looping);
+}
+
+TEST(CameraClipLookup, malformed_length_does_not_become_an_authoritative_wait) {
+    for (float length : {0.0f, -1.0f, std::numeric_limits<float>::infinity(),
+                         std::numeric_limits<float>::quiet_NaN()}) {
+        auto animation = cameraClip("cut001", length);
+        graphics::Model model("camera", 0, nullptr, {animation}, "", 1);
+        auto result = findCameraClip(model, decodeCameraAnimation(1000));
+        EXPECT_EQ(animation, result.animation); // Lookup and safe timing are distinct.
+        EXPECT_FLOAT_EQ(0, result.duration());
+    }
 }

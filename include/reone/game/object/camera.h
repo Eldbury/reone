@@ -76,6 +76,8 @@ protected:
 
     void rebuildProjection();
     virtual float projectionFovy() const = 0;
+    virtual float projectionNear() const;
+    virtual float projectionFar() const;
 };
 
 } // namespace game
