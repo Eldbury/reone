@@ -683,6 +683,38 @@ TEST(ModelSceneNode, should_restart_a_completed_queued_animation_explicitly) {
     EXPECT_NEAR(1.0f, modelSceneNode->getNodeByName("root_node")->localTransform()[3].x, 1e-5);
 }
 
+TEST(ModelSceneNode, camera_loop_preserves_residual_phase_and_samples_that_pose_once) {
+    GraphicsOptions options;
+    MockRenderPipelineFactory pipelineFactory;
+    TestGraphicsModule graphics;
+    graphics.init();
+    TestAudioModule audio;
+    audio.init();
+    TestResourceModule resource;
+    resource.init();
+    SceneGraph scene("camera", pipelineFactory, options, graphics.services(), audio.services(), resource.services());
+    auto root = std::make_shared<ModelNode>(0, "root", glm::vec3(10, 20, 30), glm::quat(1, 0, 0, 0), true, nullptr);
+    auto track = std::make_shared<ModelNode>(0, "root", glm::vec3(0), glm::quat(1, 0, 0, 0), false, nullptr);
+    track->vectorTracks()[ControllerTypes::position].add(0, glm::vec3(0));
+    track->vectorTracks()[ControllerTypes::position].add(1, glm::vec3(4, 0, 0));
+    auto animation = std::make_shared<Animation>("default", 1, 0, "root", track, std::vector<Animation::Event> {});
+    Model model("camera", 0, root, {animation}, "", 1);
+    model.init();
+    auto node = scene.newModel(model, ModelUsage::Camera);
+    node->playAnimation(*animation);
+    node->update(0.25f);
+    // Same asset with changed decoded loop metadata keeps its running phase.
+    node->playAnimation(*animation, nullptr, AnimationProperties::fromFlags(AnimationFlags::loop));
+    EXPECT_FLOAT_EQ(0.25f, node->animationChannels().front().time);
+    node->update(2.5f);
+    EXPECT_FLOAT_EQ(0.75f, node->animationChannels().front().time);
+    EXPECT_EQ(glm::vec3(13, 20, 30), glm::vec3(node->getNodeByName("root")->localTransform()[3]));
+    node->update(0.25f);
+    EXPECT_FLOAT_EQ(0, node->animationChannels().front().time);
+    EXPECT_EQ(glm::vec3(10, 20, 30), glm::vec3(node->getNodeByName("root")->localTransform()[3]));
+    EXPECT_FALSE(node->isAnimationFinished());
+}
+
 TEST(ModelSceneNode, should_not_restart_an_animation_that_is_not_queued) {
     auto graphicsOpt = GraphicsOptions();
     auto pipelineFactory = MockRenderPipelineFactory();

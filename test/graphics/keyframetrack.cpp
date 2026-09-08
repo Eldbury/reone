@@ -49,3 +49,36 @@ TEST(KeyframeTrack, float) {
     ASSERT_TRUE(found);
     ASSERT_TRUE(glm::all(glm::equal(result, glm::mix(v0, v1, 0.5f))));
 }
+
+TEST(KeyframeTrack, clamps_both_ends_when_a_track_ends_before_the_clip) {
+    KeyframeTrack<float> track;
+    track.add(1, 2);
+    track.add(2, 4);
+    float value;
+    ASSERT_TRUE(track.valueAtTime(-1, value));
+    EXPECT_FLOAT_EQ(2, value);
+    ASSERT_TRUE(track.valueAtTime(5, value));
+    EXPECT_FLOAT_EQ(4, value);
+    ASSERT_TRUE(track.valueAtTime(1.5f, value));
+    EXPECT_FLOAT_EQ(3, value);
+}
+
+TEST(KeyframeTrack, bezier_handles_are_value_offsets_and_time_is_normalized) {
+    KeyframeTrack<float> scalar;
+    // Control polygon (2, 6, 8, 4); nonzero endpoints distinguish offsets
+    // from absolute control points. Midpoint is (2 + 18 + 24 + 4)/8 = 6.
+    scalar.addBezier(3, 2, 100, 4);
+    scalar.addBezier(7, 4, 4, -100);
+    float value;
+    ASSERT_TRUE(scalar.valueAtTime(5, value));
+    EXPECT_FLOAT_EQ(6, value);
+    ASSERT_TRUE(scalar.valueAtTime(9, value));
+    EXPECT_FLOAT_EQ(4, value);
+
+    KeyframeTrack<glm::vec3> vector;
+    vector.addBezier(3, {2, 0, 1}, {100, 100, 100}, {4, 0, 0});
+    vector.addBezier(7, {4, 8, 1}, {4, 0, 0}, {-100, -100, -100});
+    glm::vec3 position;
+    ASSERT_TRUE(vector.valueAtTime(5, position));
+    EXPECT_EQ(glm::vec3(6, 4, 1), position);
+}

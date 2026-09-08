@@ -113,3 +113,62 @@ TEST(MdlReader, should_load_mdl) {
     auto rootNode = model->rootNode();
     EXPECT_EQ(std::string("root_node"), rootNode->name());
 }
+
+TEST(MdlReader, preserves_bezier_vector_and_float_rows) {
+    // Synthetic one-node MDL. All offsets below are file offsets; stored MDL
+    // offsets exclude its 12-byte file header. No shipped asset bytes.
+    std::string bytes(306 + 32 + 28 * 4, '\0');
+    auto word = [&](size_t offset, uint32_t value, int width = 4) {
+        for (int i = 0; i < width; ++i) bytes[offset + i] = (value >> (8 * i)) & 0xff;
+    };
+    auto number = [&](size_t offset, float value) {
+        uint32_t bits;
+        std::memcpy(&bits, &value, sizeof(bits));
+        word(offset, bits);
+    };
+    word(4, bytes.size() - 12);
+    bytes.replace(20, 10, "bezier_cam");
+    word(52, 210); // root
+    word(56, 1);
+    number(144, 1); // animation scale
+    word(196, 196); // name array
+    word(200, 1);
+    word(204, 1);
+    word(208, 200);
+    bytes.replace(212, 9, "root_node");
+    number(250, 1); // root quaternion W
+    word(278, 294); // keys
+    word(282, 2);
+    word(286, 2);
+    word(290, 326); // data
+    word(294, 28);
+    word(298, 28);
+    // Root node ends at 302 (four bytes of unused padding before keys).
+    word(306, ControllerTypes::position);
+    word(312, 2, 2); // two rows
+    word(314, 0, 2); // time index
+    word(316, 2, 2); // data index
+    word(318, 19, 1); // vec3 + Bezier flag
+    word(322, ControllerTypes::scale);
+    word(328, 2, 2);
+    word(330, 20, 2);
+    word(332, 22, 2);
+    word(334, 17, 1); // float + Bezier flag
+    const float data[] {3, 7, 2, 0, 1, 100, 100, 100, 4, 0, 0,
+                             4, 8, 1, 4, 0, 0, -100, -100, -100,
+                           3, 7, 2, 100, 4, 4, 4, -100};
+    for (size_t i = 0; i < std::size(data); ++i) number(338 + 4 * i, data[i]);
+    MemoryInputStream mdl(bytes);
+    std::string empty;
+    MemoryInputStream mdx(empty);
+    Statistic statistic;
+    MdlMdxReader reader(mdl, mdx, statistic);
+    reader.load();
+    const auto root = reader.model()->rootNode();
+    glm::vec3 position;
+    ASSERT_TRUE(root->vectorTracks().at(ControllerTypes::position).valueAtTime(5, position));
+    EXPECT_EQ(glm::vec3(6, 4, 1), position);
+    float scale;
+    ASSERT_TRUE(root->floatTracks().at(ControllerTypes::scale).valueAtTime(5, scale));
+    EXPECT_FLOAT_EQ(6, scale);
+}

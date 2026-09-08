@@ -792,9 +792,13 @@ void MdlMdxReader::readFloatController(const ControllerKey &key,
     int numColumns = key.numColumns & ~kFlagBezier;
     ensureNumColumnsEquals(key.type, 1, numColumns);
     for (uint16_t i = 0; i < key.numRows; ++i) {
-        float time = data[key.timeIndex + i];
-        float value = data[key.dataIndex + (bezier ? 3 : 1) * i];
-        track.add(time, value);
+        float time = data.at(key.timeIndex + i);
+        const size_t offset = key.dataIndex + (bezier ? 3 : 1) * i;
+        if (bezier) {
+            track.addBezier(time, data.at(offset), data.at(offset + 1), data.at(offset + 2));
+        } else {
+            track.add(time, data.at(offset));
+        }
     }
     track.update();
 }
@@ -811,9 +815,17 @@ void MdlMdxReader::readVectorController(const ControllerKey &key,
     }
     ensureNumColumnsEquals(key.type, 3, numColumns);
     for (uint16_t i = 0; i < key.numRows; ++i) {
-        float time = data[key.timeIndex + i];
-        glm::vec3 value(glm::make_vec3(&data[key.dataIndex + (bezier ? 9 : 3) * i]));
-        track.add(time, value);
+        float time = data.at(key.timeIndex + i);
+        const size_t offset = key.dataIndex + (bezier ? 9 : 3) * i;
+        if (offset + (bezier ? 9 : 3) > data.size()) {
+            throw ValidationException("Truncated vector controller");
+        }
+        glm::vec3 value(glm::make_vec3(&data[offset]));
+        if (bezier) {
+            track.addBezier(time, value, glm::make_vec3(&data[offset + 3]), glm::make_vec3(&data[offset + 6]));
+        } else {
+            track.add(time, value);
+        }
     }
     track.update();
 }

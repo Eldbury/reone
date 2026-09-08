@@ -27,6 +27,9 @@ public:
     struct Keyframe {
         float time {0.0f};
         Value value {Value()};
+        Value incoming {Value()};
+        Value outgoing {Value()};
+        bool bezier {false};
     };
 
     void add(float time, Value value) {
@@ -42,12 +45,21 @@ public:
         });
     }
 
+    // MDL tangents are offsets from their key's value, not derivatives.
+    void addBezier(float time, Value value, Value incoming, Value outgoing) {
+        _keyframes.push_back({time, std::move(value), std::move(incoming), std::move(outgoing), true});
+    }
+
     bool valueAtTime(float time, Value &value) const {
         if (_keyframes.empty()) {
             return false;
         }
         if (_keyframes.size() == 1ll || _keyframes[0].time >= time) {
             value = _keyframes[0].value;
+            return true;
+        }
+        if (time >= _keyframes.back().time) {
+            value = _keyframes.back().value;
             return true;
         }
         int rightKfIdx;
@@ -81,6 +93,13 @@ private:
     Value interpolateKeyframes(const Keyframe &lhs, const Keyframe &rhs, float factor) const {
         if (lhs.time == rhs.time) {
             return lhs.value;
+        }
+        if (lhs.bezier && rhs.bezier) {
+            const float inverse = 1.0f - factor;
+            return inverse * inverse * inverse * lhs.value +
+                   3.0f * inverse * inverse * factor * (lhs.value + lhs.outgoing) +
+                   3.0f * inverse * factor * factor * (rhs.value + rhs.incoming) +
+                   factor * factor * factor * rhs.value;
         }
         return glm::mix(lhs.value, rhs.value, factor);
     }

@@ -269,6 +269,14 @@ void ModelSceneNode::playAnimation(Animation &anim, std::shared_ptr<LipAnimation
         properties.scale = _model->animationScale();
     }
 
+    // Camera requests can change once/loop metadata while resolving to the
+    // same literal default clip. An existing named channel keeps its phase.
+    if (_usage == ModelUsage::Camera && !_animChannels.empty() &&
+        _animChannels.front().anim == &anim && !_animChannels.front().finished) {
+        _animChannels.front().properties = properties;
+        return;
+    }
+
     // Return if same animation is already playing
     if (!_animChannels.empty() &&
         _animChannels[0].anim == &anim && _animChannels[0].lipAnim == lipAnim && _animChannels[0].properties == properties)
@@ -446,7 +454,12 @@ void ModelSceneNode::updateAnimationChannel(AnimationChannel &channel, float dt)
 
     // Advance time
     float oldTime = channel.time;
-    channel.time = glm::min(length, channel.time + channel.properties.speed * dt);
+    const float advancedTime = channel.time + channel.properties.speed * dt;
+    const bool cameraLoop = _usage == ModelUsage::Camera &&
+                            (channel.properties.flags & AnimationFlags::loop) &&
+                            std::isfinite(length) && length > 0;
+    const bool wrapped = cameraLoop && advancedTime >= length;
+    channel.time = cameraLoop ? std::fmod(advancedTime, length) : glm::min(length, advancedTime);
 
     // Clear transition flag if past transition time
     if (channel.transition && channel.time >= channel.anim->transitionTime()) {
@@ -455,10 +468,13 @@ void ModelSceneNode::updateAnimationChannel(AnimationChannel &channel, float dt)
 
     // Signal events between previous and current time
     for (auto &event : channel.anim->events()) {
-        if (event.time > oldTime && event.time <= channel.time) {
+        if ((!wrapped && event.time > oldTime && event.time <= channel.time) ||
+            (wrapped && (advancedTime - oldTime >= length || event.time > oldTime || event.time <= channel.time))) {
             signalEvent(event.name);
         }
     }
+
+    if (wrapped) rearmSingleEmitters(channel.anim->root());
 
     // Compute animation states only when this model is not culled
     if (!_culled) {
