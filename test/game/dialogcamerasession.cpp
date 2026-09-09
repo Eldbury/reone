@@ -13,9 +13,14 @@
 #include "reone/graphics/animation.h"
 #include "reone/graphics/camera/perspective.h"
 #include "reone/graphics/modelnode.h"
+#include "reone/graphics/mesh.h"
+#include "reone/graphics/texture.h"
+#include "reone/scene/render/pass.h"
+#include "reone/scene/node/mesh.h"
 #include "reone/scene/node/camera.h"
 #include "reone/scene/node/dummy.h"
 #include "reone/scene/node/light.h"
+#include "reone/scene/node/sound.h"
 #include "reone/scene/node/particle.h"
 #include "reone/scene/collision.h"
 
@@ -114,6 +119,20 @@ protected:
     void setReplyLines(std::vector<std::string>) override {}
 };
 
+class CameraRenderPass : public scene::IRenderPass {
+public:
+    int draws {0};
+    void draw(graphics::Mesh &, graphics::Material &, const glm::mat4 &, const glm::mat4 &) override { ++draws; }
+    void drawSkinned(graphics::Mesh &, graphics::Material &, const glm::mat4 &, const glm::mat4 &, const std::vector<glm::mat4> &) override { ADD_FAILURE(); }
+    void drawDangly(graphics::Mesh &, graphics::Material &, const glm::mat4 &, const glm::mat4 &, const std::vector<glm::vec4> &) override { ADD_FAILURE(); }
+    void drawSaber(graphics::Mesh &, graphics::Material &, const glm::mat4 &, const glm::mat4 &, const glm::vec4 &) override { ADD_FAILURE(); }
+    void drawBillboard(graphics::Texture &, const glm::vec4 &, const glm::mat4 &, const glm::mat4 &, std::optional<float>) override { ADD_FAILURE(); }
+    void drawParticles(graphics::Texture &, graphics::FaceCullMode, bool, const glm::ivec2 &, const std::vector<scene::ParticleInstance> &) override { ADD_FAILURE(); }
+    void drawGrass(float, float, graphics::Texture &, std::optional<std::reference_wrapper<graphics::Texture>> &, const std::vector<scene::GrassInstance> &) override { ADD_FAILURE(); }
+    void drawAABB(const std::vector<glm::vec4> &) override { ADD_FAILURE(); }
+    void drawImage(graphics::Texture &, const glm::ivec2 &, const glm::ivec2 &, glm::vec4, glm::mat3x4, scene::ImageAlphaMode) override { ADD_FAILURE(); }
+};
+
 class SessionSceneGraph : public scene::SceneGraph {
 public:
     using SceneGraph::SceneGraph;
@@ -136,6 +155,11 @@ public:
         auto node = SceneGraph::newModel(model, usage);
         allocations.push_back(node);
         if (usage == scene::ModelUsage::Camera) cameraModel = node;
+        return node;
+    }
+    std::shared_ptr<scene::MeshSceneNode> newMesh(scene::ModelSceneNode &model, graphics::ModelNode &source) override {
+        auto node = SceneGraph::newMesh(model, source);
+        allocations.push_back(node);
         return node;
     }
     std::shared_ptr<scene::LightSceneNode> newLight(scene::ModelSceneNode &model, graphics::ModelNode &source) override {
@@ -2027,4 +2051,131 @@ TEST_P(DialogueCameraSessionTest, missing_semantic_participant_asset_does_not_wa
     EXPECT_TRUE(node->isAnimationPlaying("cut001"));
     EXPECT_FALSE(node->isAnimationPlaying("greeting"));
     EXPECT_FALSE(Access::waiting(*dialog));
+}
+
+TEST_P(DialogueCameraSessionTest, camera_mesh_render_and_cache_release_preserve_another_root_sharing_the_same_resource) {
+    auto root = modelResource("render_template")->rootNode();
+    auto hook = root->children().front();
+    auto source = std::make_shared<graphics::ModelNode>(2, "authored_mesh", glm::vec3(0), glm::quat(1, 0, 0, 0), true, hook.get());
+    auto mesh = std::make_shared<graphics::ModelNode::TriangleMesh>();
+    mesh->mesh = std::make_shared<graphics::Mesh>(std::vector<graphics::Mesh::Vertex> {}, graphics::Mesh::VertexLayout {}, std::vector<graphics::Mesh::Face> {});
+    mesh->render = true;
+    mesh->diffuseMap = "camera_texture";
+    source->setMesh(mesh);
+    source->floatTracks()[graphics::ControllerTypes::alpha].add(0, 1.0f);
+    source->floatTracks()[graphics::ControllerTypes::alpha].add(2, 0.5f);
+    hook->addChild(source);
+    auto clip = std::make_shared<graphics::Animation>("cut001w", 2, 0, "root", root, std::vector<graphics::Animation::Event> {});
+    auto asset = std::make_shared<graphics::Model>("authored_camera", 0, root,
+                 std::vector<std::shared_ptr<graphics::Animation>> {clip}, "", 1);
+    // The render-pass spy consumes CPU mesh metadata; no OpenGL upload is needed.
+    useCameraModel(asset);
+    auto texture = std::make_shared<graphics::Texture>("camera_texture", graphics::TextureType::TwoDim, graphics::Texture::Properties {});
+    ON_CALL(engine.resourceModule().textures(), get("camera_texture", _)).WillByDefault(Return(texture));
+    auto other = graph->newModel(*asset, scene::ModelUsage::Room);
+    other->setCullingEnabled(false);
+    graph->addRoot(other);
+    graph->allocations.clear(); // Unrelated root survives the camera session.
+    start(dialogue("mesh_camera", true));
+    game->update(0.25f);
+    auto model = graph->cameraModel.lock();
+    auto child = model->getNodeByName("authored_mesh");
+    CameraRenderPass pass;
+    graph->renderOpaque(pass);
+    graph->renderTransparent(pass);
+    EXPECT_EQ(2, pass.draws);
+    child->setEnabled(false);
+    game->update(0.25f);
+    EXPECT_FLOAT_EQ(0.5f, model->animationChannels().front().time);
+    pass.draws = 0;
+    graph->renderOpaque(pass);
+    graph->renderTransparent(pass);
+    EXPECT_EQ(1, pass.draws);
+    child->setEnabled(true);
+    game->update(0.25f);
+    model.reset();
+    Access::finish(*dialog);
+    expectReleased();
+    pass.draws = 0;
+    // Deliberately render the cached frame without an intervening scene update.
+    graph->renderOpaque(pass);
+    graph->renderTransparent(pass);
+    EXPECT_EQ(1, pass.draws);
+    EXPECT_EQ(asset.get(), &other->model());
+    EXPECT_TRUE(other->getNodeByName("authored_mesh"));
+    graph->removeRoot(*other);
+    graph->releaseUnrootedNode(*other);
+}
+
+TEST_P(DialogueCameraSessionTest, angle_five_retains_ordinary_actor_bindings_and_follows_their_current_pose) {
+    auto first = framingActor("first", {4, 0, 0});
+    auto second = framingActor("second", {0, 0, 0});
+    auto third = framingActor("third", {100, 100, 0});
+    auto resource = cameraSequence("hold_actor_bindings", 2);
+    for (auto &entry : resource->entries) entry.cameraAnimation = 0;
+    resource->entries[0].speaker = "first";
+    resource->entries[0].listener = "second";
+    resource->entries[0].cameraAngle = 2;
+    resource->entries[1].speaker = "third";
+    resource->entries[1].listener = kObjectTagPlayer;
+    resource->entries[1].cameraAngle = 5;
+    resource->entries[1].camHeightOffset = 100; // Hold ignores new shot parameters.
+    start(resource);
+    Access::tick(*game, 0);
+    const auto original = graph->camera()->get().origin();
+    Access::pick(*dialog);
+    Access::tick(*game, 0);
+    EXPECT_EQ(original, graph->camera()->get().origin());
+    first->setPosition(first->position() + glm::vec3(0, 2, 0));
+    second->setPosition(second->position() + glm::vec3(0, 2, 0));
+    Access::tick(*game, 0.25f);
+    EXPECT_NEAR(original.x, graph->camera()->get().origin().x, 1e-5f);
+    EXPECT_NEAR(original.y + 2, graph->camera()->get().origin().y, 1e-5f);
+    EXPECT_NEAR(original.z, graph->camera()->get().origin().z, 1e-5f);
+}
+
+TEST_P(DialogueCameraSessionTest, attached_camera_culls_positional_sounds_at_its_world_pose) {
+    auto nearby = graph->newSound();
+    nearby->setLocalTransform(glm::translate(glm::vec3(3, 4, 5)));
+    nearby->setMaxDistance(1);
+    graph->addRoot(nearby);
+    auto atOrigin = graph->newSound();
+    atOrigin->setMaxDistance(1);
+    graph->addRoot(atOrigin);
+    start(dialogue("world_audio", true));
+    game->update(0.25f);
+    ASSERT_TRUE(graph->camera()->get().parent());
+    EXPECT_EQ(glm::vec3(0), glm::vec3(graph->camera()->get().localTransform()[3]));
+    EXPECT_EQ(glm::vec3(3, 4, 5), graph->camera()->get().origin());
+    EXPECT_TRUE(nearby->auidible());
+    EXPECT_FALSE(atOrigin->auidible());
+    Access::finish(*dialog);
+    expectReleased();
+    graph->removeRoot(*nearby);
+    graph->releaseUnrootedNode(*nearby);
+    graph->removeRoot(*atOrigin);
+    graph->releaseUnrootedNode(*atOrigin);
+}
+
+TEST_P(DialogueCameraSessionTest, video_effect_only_entry_is_not_discarded_as_routing_or_bark) {
+    videoTable();
+    for (bool terminal : {false, true}) {
+        auto resource = cameraSequence("effect_only", terminal ? 1 : 2);
+        resource->cameraModel.clear();
+        auto &entry = resource->entries.front();
+        entry.text.clear();
+        entry.cameraAnimation = 0;
+        entry.cameraAngle = 0;
+        entry.delay = -1;
+        entry.camVidEffect = 1;
+        resource->replies.front().text.clear();
+        start(resource);
+        ASSERT_EQ(dialog, Access::active(*game));
+        ASSERT_EQ(&entry, Access::entry(*dialog));
+        EXPECT_EQ(Game::Screen::Conversation, game->currentScreen());
+        EXPECT_EQ(glm::vec3(2.4f, 0.4f, 0.4f), Access::effect(*game).modulation);
+        EXPECT_FALSE(Access::entryEnded(*dialog));
+        Access::finish(*dialog);
+        expectReleased();
+    }
 }

@@ -56,7 +56,7 @@ verified by a live vanilla A → static → A phase trace.
 | --- | --- |
 | K1 `tar02_start`, `m02af_c10_cam` | Entries 0/1 request 1200/1201, angle 4, FoV 34.5. Clips last 7.6667 / 4.1 seconds. Mixed PLAYER stunts are authored without root AnimatedCut. |
 | K2 `intro`, `001ebocam` | Model contains only CUT001W, length 23.6667. Entry 3 requests 1200; entries 4–7 request missing CUT001 via 1000. No W-to-plain alias is justified. |
-| K2 `kreiatch`, `301narcam` | Entry 3 requests missing cut002l via 1401 with WaitFlags 3 and Skippable 1. Treating every looping ordinal as an infinite wait would hang this shipped sequence. |
+| K2 `kreiatch`, `301narcam` | Entry 3 requests missing cut002l via 1401 with WaitFlags 3 and Skippable 1. This missing named clip must not wait on retained playback; live reachability of this node has not been established. |
 | Both games, 10098 | Outside animated selection, including authored replies. It is not a request for a fabricated W clip. The exact angle-4 fallback pose remains unverified. |
 
 The installed-resource scan finds 231 K1 accepted camera ordinals (194 with
@@ -131,9 +131,34 @@ clock used by wait bit 8. Automatic blank replies apply fade independently of
 camera selection. Invalid/nonfinite times become zero and colors are finite
 clamped values: this is malformed-input safety, not a vanilla sanitation claim.
 
-K1 `m41ad_c01_cam` contains `ringfade` light/scale controllers. Camera model
-render membership is therefore necessary even though most camera trees contain
+K1 `m41ad_c01_cam` contains a `ringfade` mesh (node flags 33) with scale, alpha
+and self-illumination controllers. Camera model render membership is therefore necessary even though most camera trees contain
 only dummy nodes. Explicit render-only roots preserve private animation ownership
 and normal scene light/mesh collection. Cleanup removes registration and cached
 references before releasing mutable nodes. Visible/hidden children do not change
 the number of model advances.
+
+
+## Final content and regression checks
+
+The final package retains real OpenGL K1 `tar02_start` and `tar02_carth022`
+(animated-to-ordinary) captures, and K2 `intro` and `kreiatch` captures. An
+independent raw-MDL script checks nine logged animated poses, directions, clip
+phases and FoVs against shipped controller data. This validates Reone/content
+consistency; a bounded isolated Wine attempt could not produce a usable vanilla
+window, so there is no matched vanilla screenshot parity claim.
+
+K2 intro replay uses a local fixture changing one StartingList link to entry 3
+in an already-completed copied save. Reply 3's first unconditional link then
+selects entry 10, bypassing missing-cut001 entries 4–7. A second local fixture
+changes that link to entry 4 to exercise those authored nodes. Neither replay
+proves that unmodified shipped progression depends on the missing clip. Fixture
+hashes and the exact link changes are outside the source tree; authored camera
+fields, animations and waits are unchanged.
+
+Final review corrected angle 5 to retain ordinary actor bindings and sample
+their current poses. It also corrected SceneGraph positional-sound eligibility
+to use the attached camera's world origin; a focused Game/GUI regression first
+reproduced the wrong audible source at local origin. Private mesh cleanup tests
+render the cached frame immediately after release and preserve an unrelated
+root sharing the immutable model. These tests require no OpenGL context.

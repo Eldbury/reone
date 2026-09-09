@@ -173,7 +173,9 @@ class MixedStuntTestAccess {
 public:
     static void loadParticipants(DialogGUI &gui, const std::shared_ptr<resource::Dialog> &dialog) {
         gui._dialog = dialog;
-        gui.loadStuntParticipants();
+        // Exercise the actual start hook: it captures the conversation PC
+        // before resolving stunt/ordinary participant names.
+        gui.onStart();
     }
 
     static size_t participantCount(const DialogGUI &gui) {
@@ -1272,7 +1274,7 @@ TEST(Conversation, should_present_auto_routing_entry_with_authored_presentation_
         [](auto &entry) { entry.sound = "sound"; },
         [](auto &entry) { entry.voResRef = "voice"; },
         [](auto &entry) { entry.cameraAnimation = 1200; },
-        [](auto &entry) { entry.cameraId = 1; },
+        [](auto &entry) { entry.cameraId = 0; entry.cameraAngle = 6; },
         [](auto &entry) { entry.cameraAngle = 1; },
         [](auto &entry) { entry.animations.push_back({"participant", 1200}); },
         [](auto &entry) { entry.delay = 0; },

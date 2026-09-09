@@ -448,8 +448,14 @@ void DialogGUI::updateCamera() {
     auto resource = _dialog; // Keep the authored node alive across provider calls.
     const auto &node = *cameraNode();
     int cameraId;
-    if (getCamera(cameraId) != CameraType::Dialog || isCameraHeld()) {
+    if (getCamera(cameraId) != CameraType::Dialog) {
         _framingAngle = 0;
+        return;
+    }
+    if (isCameraHeld()) {
+        // Angle 5 keeps the current ordinary controller's actor bindings and
+        // offsets. Static/animated/invalid-angle holds have no actor binding.
+        if (node.cameraAngle != 5) _framingAngle = 0;
         return;
     }
     const auto angle = resolveCameraAngle(node.cameraAngle);
@@ -812,7 +818,8 @@ void DialogGUI::setReplyLines(std::vector<std::string> lines) {
 }
 
 void DialogGUI::refreshCameraPose() {
-    if (!isCurrentConversation() || _game.cameraType() != CameraType::Dialog || isCameraHeld()) return;
+    if (!isCurrentConversation() || _game.cameraType() != CameraType::Dialog) return;
+    if (isCameraHeld() && _framingAngle == 0) return;
     if (_framingAngle == 0) updateCamera(); // A removed static feed just fell back.
     if (!isCurrentConversation()) return;
     auto first = _framingFirst.resolve();

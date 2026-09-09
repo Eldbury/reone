@@ -295,7 +295,9 @@ void SceneGraph::updateFlareLights() {
 
 void SceneGraph::updateSounds() {
     std::vector<std::pair<SoundSceneNode *, float>> distances;
-    glm::vec3 cameraPos(_activeCamera->localTransform()[3]);
+    // Authored cameras are attached to an animated hook. Sound distances use
+    // the published world pose, not the camera's identity attachment transform.
+    glm::vec3 cameraPos(_activeCamera->origin());
 
     // For each sound, calculate its distance to the camera
     for (auto &root : _soundRoots) {

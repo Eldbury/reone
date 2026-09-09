@@ -439,7 +439,8 @@ void Conversation::loadEntry(int index, bool start) {
     bool oneLiner = false;
     if (start && _replies.size() == 1ll && !dialog->isAnimatedCutscene() && dialog->cameraModel.empty() &&
         _currentEntry->cameraAnimation == 0 && _currentEntry->cameraAngle == 0 &&
-        _currentEntry->animations.empty() && _currentEntry->waitFlags == 0 && _currentEntry->fadeType == 0) {
+        _currentEntry->animations.empty() && _currentEntry->waitFlags == 0 && _currentEntry->fadeType == 0 &&
+        _currentEntry->camVidEffect == -1) {
         const Dialog::EntryReply &reply = *_replies[0];
         oneLiner = reply.text.empty() && reply.entries.empty();
     }
@@ -684,7 +685,8 @@ bool Conversation::isNonPresentationalEntry() const {
            !_currentEntry->staticCameraId() &&
            _currentEntry->cameraAngle == 0 &&
            _currentEntry->animations.empty() &&
-           _currentEntry->delay == -1 && _currentEntry->waitFlags == 0 && _currentEntry->fadeType == 0;
+           _currentEntry->delay == -1 && _currentEntry->waitFlags == 0 && _currentEntry->fadeType == 0 &&
+           _currentEntry->camVidEffect == -1;
 }
 
 void Conversation::endCurrentEntry() {
