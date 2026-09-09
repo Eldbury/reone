@@ -1072,14 +1072,11 @@ void Creature::playAnimation(AnimationType type, AnimationProperties properties)
 }
 
 void Creature::playAnimation(const std::string &name, AnimationProperties properties) {
-    bool fireForget = !(properties.flags & AnimationFlags::loop);
-
-    doPlayAnimation(fireForget, [&]() {
-        auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode);
-        if (model) {
-            model->playAnimation(name, nullptr, properties);
-        }
-    });
+    auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode);
+    auto animation = model ? model->model().getAnimation(name) : nullptr;
+    if (animation) {
+        playAnimation(animation, std::move(properties));
+    }
 }
 
 bool Creature::doPlayAnimation(bool fireForget, const std::function<void()> &callback) {
@@ -1089,13 +1086,16 @@ bool Creature::doPlayAnimation(bool fireForget, const std::function<void()> &cal
 
     callback();
 
-    if (fireForget) {
-        _animFireForget = true;
-    }
+    // An accepted explicit request owns the channel until a later state
+    // change or its own fire-and-forget completion. Do not let an older
+    // pending idle refresh (or an older clip's completion) replace it.
+    _animDirty = false;
+    _animFireForget = fireForget;
     return true;
 }
 
 bool Creature::playAnimation(const std::shared_ptr<Animation> &anim, AnimationProperties properties) {
+    if (!anim) return false;
     bool fireForget = !(properties.flags & AnimationFlags::loop);
 
     return doPlayAnimation(fireForget, [&]() {
@@ -2949,6 +2949,8 @@ std::string Creature::getAnimationName(AnimationType anim) const {
         return "weld";
     case AnimationType::LoopingDead:
         return getDeadAnimation();
+    case AnimationType::LoopingDeadProne:
+        return getFirstIfCreatureModel("cdead", "dead3");
     case AnimationType::LoopingTalkInjured:
         return "talkinj";
     case AnimationType::LoopingListenInjured:
@@ -3001,7 +3003,6 @@ std::string Creature::getAnimationName(AnimationType anim) const {
     case AnimationType::LoopingGetLow:
     case AnimationType::LoopingGetMid:
     case AnimationType::LoopingPauseDrunk:
-    case AnimationType::LoopingDeadProne:
     case AnimationType::LoopingKneelTalkAngry:
     case AnimationType::LoopingKneelTalkSad:
     case AnimationType::LoopingCheckBody:

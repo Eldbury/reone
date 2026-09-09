@@ -23,6 +23,7 @@
 #include "../fixtures/engine.h"
 
 #include "reone/game/action/closedoor.h"
+#include "reone/game/action/playanimation.h"
 #include "reone/game/action/attackobject.h"
 #include "reone/game/action/movetopoint.h"
 #include "reone/game/action/opendoor.h"
@@ -6494,4 +6495,74 @@ TEST(StopMovement, should_halt_the_player_with_a_module) {
     TestGameModule::stopMovement(fixture.game);
 
     EXPECT_FALSE(player.isMovementRequested());
+}
+
+TEST(CreatureScriptAnimation, deadProneRequestResolvesAndSurvivesTheFirstStateRefresh) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::TSL, "", engine.options(), engine.services(), console);
+    OverlayFixture fixture;
+    setUpOverlay(fixture, engine);
+    auto previousModel = fixture.model; // borrowed by the node until setModel below
+    fixture.model = makeModel("body", {makeAnimation("pause1"), makeAnimation("dead3"), makeAnimation("run")});
+    fixture.node->setModel(*fixture.model);
+    TestCreature creature(1, "test", game, engine.services());
+    makeHumanoid(creature, engine);
+    creature.setSceneNode(fixture.node);
+    creature.setCurrentHitPoints(10);
+    ASSERT_FALSE(creature.isDead());
+
+    // K2 ExecuteCommandPlayAnimation: 30 -> 10156; humanoid
+    // ServerToClientAnimation: 10156 -> animations.2da row 375, dead3.
+    // The shipped startup request has infinite duration; its queue action
+    // completes immediately, but the pose must survive the creature update.
+    auto action = game.newAction<PlayAnimationAction>(AnimationType::LoopingDeadProne, 1.0f, -1.0f);
+    action->execute(action, creature, 0.0f);
+    EXPECT_TRUE(action->isCompleted());
+    EXPECT_EQ("dead3", fixture.node->activeAnimationName());
+    creature.update(0.0f);
+    fixture.node->update(0.25f);
+    ASSERT_EQ(1u, fixture.node->animationChannelCount());
+    EXPECT_EQ("dead3", fixture.node->activeAnimationName());
+    EXPECT_FLOAT_EQ(0.25f, fixture.node->animationChannels().front().time);
+    EXPECT_TRUE(fixture.node->animationChannels().front().properties.flags & scene::AnimationFlags::loop);
+
+    // A subsequent actual state change still takes animation ownership.
+    creature.setMovementType(Creature::MovementType::Run);
+    creature.update(0.0f);
+    fixture.node->update(0.25f);
+    EXPECT_EQ("run", fixture.node->activeAnimationName());
+}
+
+TEST(CreatureScriptAnimation, deadProneUsesTheCreatureModelDeathLoop) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::TSL, "", engine.options(), engine.services(), console);
+    TestCreature creature(1, "test", game, engine.services());
+    // Non-humanoid ServerToClientAnimation maps 10156 to row 275, cdead.
+    EXPECT_EQ("cdead", static_cast<const Object &>(creature).getAnimationName(AnimationType::LoopingDeadProne));
+}
+
+TEST(CreatureScriptAnimation, missingOrMovingRequestsLeaveThePendingStateRefreshIntact) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::TSL, "", engine.options(), engine.services(), console);
+    OverlayFixture fixture;
+    setUpOverlay(fixture, engine);
+    TestCreature creature(1, "test", game, engine.services());
+    makeHumanoid(creature, engine);
+    creature.setCurrentHitPoints(10);
+    creature.setSceneNode(fixture.node);
+
+    scene::AnimationProperties properties;
+    properties.flags = scene::AnimationFlags::loop;
+    creature.playAnimation("missing", properties);
+    creature.update(0.0f);
+    fixture.node->update(0.25f);
+    EXPECT_EQ("pause1", fixture.node->activeAnimationName());
+    creature.setMovementType(Creature::MovementType::Run);
+    creature.playAnimation("diveroll", properties);
+    creature.update(0.0f);
+    fixture.node->update(0.25f);
+    EXPECT_EQ("run", fixture.node->activeAnimationName());
 }
