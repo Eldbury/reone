@@ -127,6 +127,18 @@ TEST_P(DialogCameraData, preserves_word_animation_ordinals_and_does_not_filter_p
     }
 }
 
+TEST_P(DialogCameraData, preserves_root_default_deadlines_and_node_wait_flags_without_rewriting_raw_delay) {
+    load({Gff::Field::newDword("Delay", 0xffffffff), Gff::Field::newInt("WaitFlags", 9)},
+         {Gff::Field::newDword("DelayEntry", 2), Gff::Field::newDword("DelayReply", 7)});
+    EXPECT_EQ(2u, _dialog->delayEntry);
+    EXPECT_EQ(7u, _dialog->delayReply);
+    EXPECT_EQ(-1, node().delay);
+    EXPECT_EQ(9, node().waitFlags);
+    load({});
+    EXPECT_EQ(0u, _dialog->delayEntry);
+    EXPECT_EQ(0u, _dialog->delayReply);
+}
+
 TEST_P(DialogCameraData, retains_signed_static_ids_and_only_angle_six_is_eligible) {
     for (uint32_t angle : {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 0xffffffffu}) {
         for (int32_t id : {0, 1, -1, -2, std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max()}) {

@@ -56,6 +56,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/game/conversation.cpp
     ${TESTS_SOURCE_DIR}/game/computer.cpp
     ${TESTS_SOURCE_DIR}/game/dialogcamerasession.cpp
+    ${TESTS_SOURCE_DIR}/game/dialogcameraclock.cpp
     ${TESTS_SOURCE_DIR}/game/globalnumber.cpp
     ${TESTS_SOURCE_DIR}/game/mainmenu.cpp
     ${TESTS_SOURCE_DIR}/game/interaction.cpp

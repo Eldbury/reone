@@ -80,3 +80,6 @@ CUT002W begins with (-2.46750, -2.79258, -0.419283). `001ebocam` similarly has a
 nonzero rest hook and a zero first animation translation. This supports the
 existing additive translation path; replacing it with absolute animation
 positions would be wrong for these fixtures.
+
+
+Participant wait correction (CAM6): K1 IsAnimationPlayingInDialog0x4c4f8..4569 returns ANY active staged participant; K2 same symbol0x26531a..539e returns ALL (early false at0x265380). K1 IsLoopingDialogAnimation0x4f300 and IsFireForgetDialogAnimation0x4ed04 include both table flags and broad participant cut bands. K2 reconstructed code is accurate for this ALL difference, but must not be projected onto K1. This explains companion loops beside a finite actor in K2 WaitFlags4 content. Implement K1 ANY/K2 ALL against current requested participant channels, including loops, while treating an empty list or missing/lost request as nonwaiting (safe divergence from K2 empty-list true/null dereference). No participant namespace narrowing. Actual model/channel state is local today; downstream MP must supply authoritative participant animation activity, not observer rendering. Exact semantic 2DA overlay/current-ordinal equivalence remains a limitation of existing participant playback.

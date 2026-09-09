@@ -43,6 +43,8 @@ std::unique_ptr<Dialog> Dialogs::loadDialog(const resource::generated::DLG &dlg)
     dialog->endScript = dlg.EndConversation;
     dialog->abortScript = dlg.EndConverAbort;
     dialog->oldHitCheck = dlg.OldHitCheck;
+    dialog->delayEntry = dlg.DelayEntry;
+    dialog->delayReply = dlg.DelayReply;
     dialog->animatedCutscene = dlg.AnimatedCut;
     dialog->conversationType = static_cast<ConversationType>(dlg.ConversationType);
     dialog->computerType = static_cast<ComputerType>(dlg.ComputerType);

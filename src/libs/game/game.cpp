@@ -3758,6 +3758,9 @@ void Game::updateDialogueCamera(float dt) {
     _conversation->refreshCameraPose();
     const auto &session = *_dialogueCameraSession;
     const float animationTime = _paused ? 0.0f : dt;
+    // Sequencing owns the metadata clock. Advance beside the private model,
+    // including when local camera construction failed; queries never tick it.
+    _conversation->_cameraClock.update(animationTime);
     if (auto animated = session.animatedCamera) {
         if (type == CameraType::Animated) animated->setFieldOfView(session.viewAngle);
         // Once selected, retained private playback keeps its world clock even

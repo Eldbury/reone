@@ -45,6 +45,10 @@ public:
         conversation.stop(Conversation::FinishReason::Normal, generation);
     }
     static void pick(Conversation &conversation) { conversation.pickReply(0); }
+    static void endEntry(Conversation &conversation) { conversation.endCurrentEntry(); }
+    static bool entryEnded(Conversation &conversation) { return conversation._entryEnded; }
+    static bool waiting(Conversation &conversation) { return conversation.isWaiting(); }
+    static float clockPhase(Conversation &conversation) { return conversation._cameraClock.phase(); }
     static void publish(Conversation &conversation, uint64_t generation, float fov) {
         Dialog::EntryReply node;
         node.cameraAnimation = 1200;
@@ -314,6 +318,7 @@ protected:
     scene::MockRenderPipelineFactory pipelineFactory;
     std::shared_ptr<graphics::Model> bodyResource;
     std::shared_ptr<graphics::Model> cameraResource;
+    std::vector<std::shared_ptr<graphics::Model>> retainedTestModels;
     std::unique_ptr<SessionSceneGraph> graph;
     std::unique_ptr<Game> game;
     std::shared_ptr<Area> area;
@@ -1386,6 +1391,220 @@ TEST_P(DialogueCameraSessionTest, private_release_rejects_foreign_graph_and_nest
     privateTree.reset();
     EXPECT_NE(nullptr, unrelated->getNodeByName("camerahook"));
     graph->allocations.clear();
+}
+
+TEST_P(DialogueCameraSessionTest, repeated_camera_wait_uses_remaining_phase_and_publishes_final_pose_before_progression) {
+    auto resource = cameraSequence("remaining_wait", 2);
+    resource->entries[1].delay = 0;
+    resource->entries[1].waitFlags = Dialog::WaitFlags::waitAnimFinish;
+    start(resource);
+    game->update(0.75f);
+    Access::pick(*dialog);
+    EXPECT_FLOAT_EQ(0.75f, Access::clockPhase(*dialog));
+    EXPECT_TRUE(Access::waiting(*dialog));
+    game->update(1.25f);
+    EXPECT_FALSE(Access::entryEnded(*dialog));
+    EXPECT_FLOAT_EQ(2, Access::clockPhase(*dialog));
+    EXPECT_FALSE(Access::waiting(*dialog));
+    game->update(0);
+    EXPECT_TRUE(Access::entryEnded(*dialog));
+    Access::pick(*dialog);
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, authored_camera_single_line_keeps_its_presentation_instead_of_becoming_a_bark) {
+    auto resource = dialogue("single_shot", false);
+    resource->entries[0].cameraAngle = 1;
+    resource->entries[0].delay = 1;
+    resource->replies[0].text.clear();
+    start(resource);
+    EXPECT_EQ(dialog, Access::active(*game));
+    EXPECT_EQ(Game::Screen::Conversation, game->currentScreen());
+    game->update(1);
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, immutable_camera_wait_survives_missing_local_hook_and_world_pause) {
+    auto root = std::make_shared<graphics::ModelNode>(0, "root", glm::vec3(0), glm::quat(1, 0, 0, 0), true, nullptr);
+    auto clip = std::make_shared<graphics::Animation>("cut001w", 2, 0, "root", root, std::vector<graphics::Animation::Event> {});
+    auto model = std::make_shared<graphics::Model>("authored_camera", 0, root,
+                  std::vector<std::shared_ptr<graphics::Animation>> {clip}, "", 1);
+    model->init();
+    useCameraModel(model);
+    auto resource = dialogue("metadata_wait", true);
+    resource->entries[0].delay = 0;
+    resource->entries[0].waitFlags = Dialog::WaitFlags::waitAnimFinish;
+    start(resource);
+    EXPECT_TRUE(Access::waiting(*dialog));
+    game->setPaused(true);
+    game->update(3);
+    EXPECT_FLOAT_EQ(0, Access::clockPhase(*dialog));
+    EXPECT_FALSE(Access::entryEnded(*dialog));
+    game->setPaused(false);
+    game->update(2);
+    EXPECT_EQ(GameCameraType::Dialog, game->cameraType());
+    EXPECT_FALSE(Access::waiting(*dialog));
+    game->update(0);
+    EXPECT_TRUE(Access::entryEnded(*dialog));
+}
+
+TEST_P(DialogueCameraSessionTest, automatic_blank_10098_reply_retains_camera_and_waits_without_presenting_a_new_shot) {
+    auto resource = cameraSequence("blank_reply_wait", 2);
+    resource->entries[0].delay = 0;
+    auto &reply = resource->replies[0];
+    reply.text.clear();
+    reply.cameraAnimation = 10098;
+    reply.cameraAngle = 6;
+    reply.cameraId = 0;
+    reply.waitFlags = Dialog::WaitFlags::waitAnimFinish;
+    reply.script = "reply_once";
+    addStatic(0);
+    EXPECT_CALL(engine.resourceModule().scripts(), get("reply_once")).WillOnce(Return(nullptr));
+    start(resource);
+    auto camera = Access::camera(*game);
+    game->update(0.5f);
+    EXPECT_EQ(&reply, Access::entry(*dialog));
+    EXPECT_EQ(GameCameraType::Animated, game->cameraType());
+    EXPECT_EQ(camera, Access::camera(*game));
+    EXPECT_TRUE(Access::waiting(*dialog));
+    game->update(1.5f);
+    game->update(0);
+    EXPECT_EQ(&resource->entries[1], Access::entry(*dialog));
+}
+
+TEST_P(DialogueCameraSessionTest, menu_uses_first_reply_static_zero_and_manual_choice_does_not_start_its_animation) {
+    auto camera = addStatic(0, 63);
+    auto resource = cameraSequence("reply_menu", 2);
+    auto &reply = resource->replies[0];
+    reply.cameraAngle = 6;
+    reply.cameraId = 0;
+    reply.cameraAnimation = 1201;
+    reply.script = "inspect_reply";
+    useCameraModel(cameraWithClips({"cut001w", "cut002w"}));
+    start(resource);
+    Access::endEntry(*dialog);
+    Access::tick(*game, 0.5f);
+    EXPECT_EQ(GameCameraType::Static, game->cameraType());
+    EXPECT_EQ(camera->sceneNode().get(), &graph->camera()->get());
+    EXPECT_NEAR(63, activeFov(), 0.0001f);
+    EXPECT_CALL(engine.resourceModule().scripts(), get("inspect_reply"))
+        .WillOnce(Invoke([&](const std::string &) {
+            EXPECT_EQ(GameCameraType::Static, game->cameraType());
+            EXPECT_FLOAT_EQ(0.5f, Access::clockPhase(*dialog));
+            return nullptr;
+        }));
+    Access::pick(*dialog);
+    EXPECT_EQ(&resource->entries[1], Access::entry(*dialog));
+}
+
+TEST_P(DialogueCameraSessionTest, missing_and_default_clips_do_not_wait_for_successful_local_playback) {
+    for (bool fallback : {false, true}) {
+        SCOPED_TRACE(fallback);
+        useCameraModel(fallback ? cameraWithClips({"default"}) : cameraWithClips({"unrelated"}));
+        auto resource = dialogue("missing_wait", true);
+        resource->entries[0].delay = 0;
+        resource->entries[0].waitFlags = Dialog::WaitFlags::waitAnimFinish;
+        start(resource);
+        EXPECT_FALSE(Access::waiting(*dialog));
+        game->update(0);
+        EXPECT_TRUE(Access::entryEnded(*dialog));
+        Access::finish(*dialog);
+        expectReleased();
+    }
+}
+
+TEST_P(DialogueCameraSessionTest, named_loop_wait_can_be_skipped_only_when_authored_skip_flags_allow_it) {
+    useCameraModel(cameraWithClips({"cut001l"}));
+    auto resource = dialogue("loop_skip", true);
+    auto &entry = resource->entries[0];
+    entry.cameraAnimation = 1400;
+    entry.delay = 0;
+    entry.waitFlags = Dialog::WaitFlags::waitAnimFinish;
+    start(resource);
+    game->update(5);
+    EXPECT_TRUE(Access::waiting(*dialog));
+    const auto click = input::Event::newMouseButtonDown({input::MouseButton::Left, true, 1, 10, 10});
+    dialog->handle(click);
+    game->update(0);
+    EXPECT_FALSE(Access::entryEnded(*dialog));
+    resource->skippable = true;
+    entry.nodeUnskippable = 1;
+    dialog->handle(click);
+    game->update(0);
+    EXPECT_EQ(GetParam() == GameID::KotOR, Access::entryEnded(*dialog));
+    if (GetParam() == GameID::TSL) {
+        entry.nodeUnskippable = 0;
+        dialog->handle(click);
+        game->update(0);
+        EXPECT_TRUE(Access::entryEnded(*dialog));
+    }
+}
+
+TEST_P(DialogueCameraSessionTest, abort_script_runs_once_after_cleanup_and_cannot_erase_its_replacement) {
+    auto first = dialogue("abort_old", true);
+    first->abortScript = "abort_replace";
+    first->endScript = "never_end";
+    auto next = dialogue("abort_new", false, true);
+    resources[next->resRef] = next;
+    EXPECT_CALL(engine.resourceModule().scripts(), get("never_end")).Times(0);
+    EXPECT_CALL(engine.resourceModule().scripts(), get("abort_replace"))
+        .WillOnce(Invoke([&](const std::string &) {
+            EXPECT_FALSE(Access::hasSession(*game));
+            game->startDialog(player, next->resRef);
+            return nullptr;
+        }));
+    start(first);
+    dialog->abort();
+    dialog->abort();
+    EXPECT_EQ(computer, Access::active(*game));
+    EXPECT_TRUE(player->isInConversation());
+    Access::finish(*computer);
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, participant_wait_uses_k1_any_k2_all_and_releases_lost_references) {
+    auto actorModel = cameraWithClips({"cut001", "cut001l"});
+    retainedTestModels.push_back(actorModel); // All assets outlive their borrowed scene nodes.
+    auto playerNode = graph->newModel(*actorModel, scene::ModelUsage::Creature);
+    TestGameModule::setAreaRuntimeSceneNode(*player, playerNode);
+    graph->addRoot(playerNode);
+    auto extra = game->newCreature();
+    extra->setTag("extra");
+    auto extraNode = graph->newModel(*actorModel, scene::ModelUsage::Creature);
+    TestGameModule::setAreaRuntimeSceneNode(*extra, extraNode);
+    graph->addRoot(extraNode);
+    area->add(extra);
+    auto resource = dialogue("participant_wait", true);
+    resource->entries[0].delay = 0;
+    resource->entries[0].waitFlags = Dialog::WaitFlags::waitParticipantFinish;
+    resource->entries[0].animations = {{kObjectTagPlayer, 1000}, {"extra", 1400}};
+    start(resource);
+    EXPECT_TRUE(Access::waiting(*dialog));
+    // Advance actual model roots once, without dispatching the next GUI node.
+    Access::tick(*game, 2.1f);
+    EXPECT_TRUE(playerNode->isAnimationFinished());
+    EXPECT_FALSE(extraNode->isAnimationFinished());
+    EXPECT_EQ(GetParam() == GameID::KotOR, Access::waiting(*dialog));
+    game->destroyRuntimeObjectGraph(extra);
+    EXPECT_FALSE(Access::waiting(*dialog));
+    game->update(0);
+    EXPECT_TRUE(Access::entryEnded(*dialog));
+}
+
+TEST_P(DialogueCameraSessionTest, absent_participant_clip_does_not_wait_for_an_unrelated_retained_animation) {
+    auto actorModel = cameraWithClips({"cut001"});
+    retainedTestModels.push_back(actorModel);
+    auto playerNode = graph->newModel(*actorModel, scene::ModelUsage::Creature);
+    TestGameModule::setAreaRuntimeSceneNode(*player, playerNode);
+    auto resource = cameraSequence("missing_participant_clip", 2);
+    resource->entries[0].animations = {{kObjectTagPlayer, 1000}};
+    resource->entries[1].animations = {{kObjectTagPlayer, 1001}};
+    resource->entries[1].waitFlags = Dialog::WaitFlags::waitParticipantFinish;
+    start(resource);
+    ASSERT_TRUE(playerNode->isAnimationPlaying("cut001"));
+    Access::pick(*dialog);
+    EXPECT_TRUE(playerNode->isAnimationPlaying("cut001"));
+    EXPECT_FALSE(Access::waiting(*dialog));
 }
 
 INSTANTIATE_TEST_SUITE_P(K1AndK2, DialogueCameraSessionTest, Values(GameID::KotOR, GameID::TSL));

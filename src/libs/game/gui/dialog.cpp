@@ -22,6 +22,7 @@
 #include "reone/audio/mixer.h"
 #include "reone/audio/source.h"
 #include "reone/graphics/di/services.h"
+#include "reone/graphics/animation.h"
 #include "reone/gui/control/panel.h"
 #include "reone/resource/2da.h"
 #include "reone/resource/di/services.h"
@@ -449,23 +450,47 @@ DialogCamera::Variant DialogGUI::getRandomCameraVariant() const {
 
 void DialogGUI::updateParticipantAnimations() {
     const auto generation = conversationGeneration();
-    // Each authored animation is resolved on its own. The ordinal decides which
-    // animation is meant, the participant decides which model plays it, and a
-    // single entry may drive stunt-bound participants and ordinary area
-    // creatures side by side.
+    _waitingParticipants.clear();
     for (auto &anim : _currentEntry->animations) {
-        if (auto cut = decodeCutAnimation(anim.animation)) {
-            applyCutAnimation(anim.participant, *cut);
-        } else {
-            applyDialogAnimation(anim.participant, anim.animation);
+        const auto cut = decodeCutAnimation(anim.animation);
+        const bool applied = cut ? applyCutAnimation(anim.participant, *cut)
+                                 : applyDialogAnimation(anim.participant, anim.animation);
+        if (conversationGeneration() != generation) return;
+        auto creature = resolveParticipantCreature(anim.participant);
+        auto node = creature ? std::dynamic_pointer_cast<ModelSceneNode>(creature->sceneNode()) : nullptr;
+        std::string name;
+        if (applied && node && !node->animationChannels().empty()) {
+            const auto &channel = node->animationChannels().front();
+            if (channel.anim && std::isfinite(channel.anim->length()) && channel.anim->length() > 0) {
+                name = channel.anim->name();
+            }
         }
-        if (conversationGeneration() != generation) {
-            return;
-        }
+        // Keep failed/lost requests in the list: in K2 they release the wait
+        // just as a completed participant does. Never wait an unrelated clip
+        // merely because a missing authored request left it playing.
+        _waitingParticipants.emplace_back(creature, std::move(name));
     }
 }
 
-void DialogGUI::applyCutAnimation(const std::string &participant, const CutAnimation &cut) {
+bool DialogGUI::isParticipantAnimationWaiting() const {
+    if (_waitingParticipants.empty()) return false;
+    for (const auto &[reference, name] : _waitingParticipants) {
+        auto creature = reference.resolve();
+        auto node = creature ? std::dynamic_pointer_cast<ModelSceneNode>(creature->sceneNode()) : nullptr;
+        const bool playing = !name.empty() && node && node->isAnimationPlaying(name) && !node->isAnimationFinished();
+        // Binary-verified difference: K1 waits for ANY active participant;
+        // K2 waits while ALL are active (one-shot actor beside looping extras).
+        if (playing != _game.isTSL()) return playing;
+    }
+    return _game.isTSL();
+}
+
+void DialogGUI::onReplyPicked() {
+    restoreInactiveStuntParticipants();
+    updateParticipantAnimations();
+}
+
+bool DialogGUI::applyCutAnimation(const std::string &participant, const CutAnimation &cut) {
     auto maybeParticipant = _participantByTag.find(participant);
     if (maybeParticipant != _participantByTag.end()) {
         Participant &stunt = maybeParticipant->second;
@@ -475,36 +500,36 @@ void DialogGUI::applyCutAnimation(const std::string &participant, const CutAnima
                 properties.flags = AnimationFlags::propagate | (cut.looping ? AnimationFlags::loop : 0);
                 properties.scale = 1.0f;
                 if (auto creature = stunt.creature.resolve()) {
-                    creature->playExternalAnimation(
+                    return creature->playExternalAnimation(
                         animation, std::move(properties));
                 }
             } else {
-                enterMixedStunt(stunt, animation, cut.looping);
+                return enterMixedStunt(stunt, animation, cut.looping);
             }
-            return;
+            return false;
         }
         // The stunt model is the authored source for this participant, so a
         // missing clip is a data problem rather than a reason to silently
         // animate from somewhere else. Staged participants also sit at the
         // stunt origin, where an in-place clip would play in the wrong place.
         warn("Dialog: stunt model has no animation: " + cut.name);
-        return;
+        return false;
     }
 
     auto creature = resolveParticipantCreature(participant);
     if (!creature) {
         warn("Dialog: participant creature not found by tag: " + participant);
-        return;
+        return false;
     }
     auto node = creature->sceneNode();
     if (!node || node->type() != SceneNodeType::Model) {
-        return;
+        return false;
     }
     // Cut clips authored without the world-space suffix live on the creature's
     // own model, so they play in place rather than through stunt staging.
     auto animation = std::static_pointer_cast<ModelSceneNode>(node)->model().getAnimation(cut.name);
     if (!animation) {
-        return;
+        return false;
     }
     AnimationProperties properties;
     if (cut.looping) {
@@ -516,23 +541,27 @@ void DialogGUI::applyCutAnimation(const std::string &participant, const CutAnima
     // before the next clip takes over.
     if (creature->playExternalAnimation(animation, std::move(properties))) {
         holdCutParticipant(creature);
+        return true;
     }
+    return false;
 }
 
-void DialogGUI::applyDialogAnimation(const std::string &participant, int ordinal) {
+bool DialogGUI::applyDialogAnimation(const std::string &participant, int ordinal) {
     const auto generation = conversationGeneration();
     auto creature = resolveParticipantCreature(participant);
     if (!creature) {
         warn("Dialog: participant creature not found by tag: " + participant);
-        return;
+        return false;
     }
     AnimationType animType = getDialogAnimationType(ordinal);
     if (conversationGeneration() != generation) {
-        return;
+        return false;
     }
     if (animType != AnimationType::Invalid) {
         creature->playAnimation(animType);
+        return true;
     }
+    return false;
 }
 
 std::optional<DialogGUI::CutAnimation> DialogGUI::decodeCutAnimation(int ordinal) {
@@ -563,7 +592,7 @@ AnimationType DialogGUI::getDialogAnimationType(int ordinal) const {
     }
     std::shared_ptr<TwoDA> animations(_services.resource.twoDas.get("dialoganimations"));
 
-    if (index >= animations->getRowCount()) {
+    if (!animations || index >= animations->getRowCount()) {
         if (ordinal < kDialogAnimationBase) {
             warn("Dialog: unsupported animation ordinal: " + std::to_string(ordinal));
         } else {
@@ -595,6 +624,7 @@ void DialogGUI::repositionMessage() {
 }
 
 void DialogGUI::onFinish() {
+    _waitingParticipants.clear();
     if (hasStuntPresentation()) {
         releaseStuntParticipants();
     }
@@ -662,7 +692,7 @@ void DialogGUI::releaseStuntParticipants() {
 void DialogGUI::onEntryEnded() {
     _controls.LB_REPLIES->setVisible(true);
 
-    updateCamera();
+    if (cameraNode() != _currentEntry) updateCamera();
     repositionMessage();
 }
 

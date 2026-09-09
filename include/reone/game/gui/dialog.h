@@ -94,8 +94,8 @@ private:
     void updateCamera();
     void refreshCameraPose() override;
     void updateParticipantAnimations();
-    void applyCutAnimation(const std::string &participant, const CutAnimation &cut);
-    void applyDialogAnimation(const std::string &participant, int ordinal);
+    bool applyCutAnimation(const std::string &participant, const CutAnimation &cut);
+    bool applyDialogAnimation(const std::string &participant, int ordinal);
     void restoreInactiveStuntParticipants();
     bool enterMixedStunt(Participant &participant, const std::shared_ptr<graphics::Animation> &animation, bool looping);
     void leaveMixedStunt(Participant &participant);
@@ -117,6 +117,9 @@ private:
     void onFinish() override;
     void onLoadEntry() override;
     void onEntryEnded() override;
+    void onReplyPicked() override;
+    bool isParticipantAnimationWaiting() const override;
+    std::vector<std::pair<RuntimeObjectRef<Creature>, std::string>> _waitingParticipants;
 
     // Loading
 

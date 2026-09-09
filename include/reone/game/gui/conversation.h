@@ -24,6 +24,7 @@
 #include "reone/system/timer.h"
 
 #include "../gui.h"
+#include "../dialogcameraclock.h"
 #include "../object.h"
 #include "../runtimeref.h"
 #include "../types.h"
@@ -90,7 +91,12 @@ protected:
 
     virtual void loadEntry(int index, bool start = false);
 
-    void pickReply(int index);
+    // A menu choice stages participant animations and proceeds immediately.
+    // Automatic blank replies have timing but retain the previous camera.
+    enum class ReplyMode { Manual, Automatic };
+    void pickReply(int index, ReplyMode mode = ReplyMode::Manual);
+    const resource::Dialog::EntryReply *cameraNode() const { return _cameraNode; }
+    bool isReplyPresentation() const { return _presentingReply || _entryEnded; }
 
     // Complete the active entry's presentation using the same path as expiry.
     void endCurrentEntry();
@@ -107,6 +113,8 @@ protected:
     virtual bool ownsConversationFlag(const Object &object) const;
     virtual void onLoadEntry();
     virtual void onEntryEnded();
+    virtual void onReplyPicked() {}
+    virtual bool isParticipantAnimationWaiting() const { return false; }
     // Local pose sampling only; sequencing remains in update(). Called after
     // world model animation and before the scene consumes the active camera.
     virtual void refreshCameraPose() {}
@@ -118,12 +126,19 @@ private:
     std::vector<const resource::Dialog::EntryReply *> _replies;
     bool _autoPickFirstReply {false};
     AutoSkip *_autoSkip {nullptr};
+    const resource::Dialog::EntryReply *_cameraNode {nullptr};
+    DialogCameraClock _cameraClock;
+    bool _presentingReply {false};
+    bool _skipRequested {false};
+    int _effectiveWaitFlags {0};
 
     void loadConversationBackground();
     void loadCameraModel();
     void loadStartEntry();
     void loadVoiceOver();
     void scheduleEndOfEntry();
+    void completeReply();
+    bool isWaiting() const;
     void loadReplies();
 
     bool isSkippableEntry() const;

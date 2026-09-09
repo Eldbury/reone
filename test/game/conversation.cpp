@@ -128,6 +128,7 @@ private:
 std::shared_ptr<Dialog> makeDialog(int firstEntryDelay = 1, bool voiced = false) {
     auto dialog = std::make_shared<Dialog>();
     dialog->resRef = "pause_test";
+    dialog->skippable = true;
     Dialog::EntryReplyLink startLink;
     startLink.index = 0;
     dialog->startEntries.push_back(startLink);

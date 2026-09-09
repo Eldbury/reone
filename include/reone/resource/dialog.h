@@ -29,6 +29,10 @@ namespace resource {
 struct Dialog {
     struct WaitFlags {
         static constexpr int waitAnimFinish = 1;
+        static constexpr int waitSoundFinish = 2;
+        static constexpr int waitParticipantFinish = 4;
+        static constexpr int waitFadeFinish = 8;
+        static constexpr int explicitDelay = 16;
     };
 
     struct Stunt {
@@ -111,6 +115,8 @@ struct Dialog {
     std::string endScript;
     std::string abortScript;
     uint8_t oldHitCheck {0};
+    uint32_t delayEntry {0};
+    uint32_t delayReply {0};
     int entryIndex {-1};
     bool animatedCutscene {false};
     std::vector<Stunt> stunts;

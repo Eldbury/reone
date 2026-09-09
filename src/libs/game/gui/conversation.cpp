@@ -96,6 +96,10 @@ void Conversation::setCameraModel(uint64_t generation) {
 
 void Conversation::presentCamera(uint64_t generation, const Dialog::EntryReply &node, bool allowAnimation) {
     if (isCurrentConversation(generation)) {
+        if (allowAnimation && _cameraModel) {
+            const auto decoded = decodeCameraAnimation(node.cameraAnimation);
+            _cameraClock.request(decoded, findCameraClip(*_cameraModel, decoded));
+        }
         _game.selectDialogueCamera(*this, generation, node, allowAnimation);
     }
 }
@@ -117,6 +121,10 @@ void Conversation::start(const std::shared_ptr<Dialog> &dialog, const std::share
     _paused = false;
     _entryEnded = true;
     _currentEntry = nullptr;
+    _cameraNode = nullptr;
+    _cameraClock.reset();
+    _presentingReply = false;
+    _skipRequested = false;
     _dialog = dialog;
     _owner = owner;
     if (owner) {
@@ -315,6 +323,10 @@ void Conversation::stop(FinishReason reason, uint64_t generation) {
         _generation = 0;
         _finishing = false;
         _currentEntry = nullptr;
+        _cameraNode = nullptr;
+        _cameraClock.reset();
+        _presentingReply = false;
+        _skipRequested = false;
         _replies.clear();
         _autoPickFirstReply = false;
         _cameraModel.reset();
@@ -343,11 +355,13 @@ void Conversation::stop(FinishReason reason, uint64_t generation) {
     };
     try {
         if (failure) std::rethrow_exception(failure);
-        // Only the existing normal-finish path dispatches EndConversation.
+        // Technical retirement/replacement never dispatches authored scripts.
         // Camera/model, screen and participant cleanup is already complete.
-        if (reason == FinishReason::Normal && dialog && !dialog->endScript.empty()) {
+        const std::string script = !dialog ? "" : reason == FinishReason::Normal ? dialog->endScript
+                                    : reason == FinishReason::Abort ? dialog->abortScript : "";
+        if (!script.empty()) {
             if (auto caller = ownerReference.resolve()) {
-                _game.scriptRunner().run(dialog->endScript, caller->id());
+                _game.scriptRunner().run(script, caller->id());
             }
         }
     } catch (...) {
@@ -384,8 +398,15 @@ void Conversation::loadEntry(int index, bool start) {
     }
     const auto generation = _generation;
     auto dialog = _dialog;
+    if (index < 0 || static_cast<size_t>(index) >= dialog->entries.size()) {
+        warn("Dialog: invalid entry link: " + std::to_string(index));
+        stop(FinishReason::StartupFailure);
+        return;
+    }
     debug("Load entry " + std::to_string(index), LogChannel::Conversation);
     _currentEntry = &_dialog->getEntry(index);
+    _presentingReply = false;
+    _skipRequested = false;
 
     applyStatusSummaryEntries(*_currentEntry);
 
@@ -414,16 +435,19 @@ void Conversation::loadEntry(int index, bool start) {
 
     // Conversation is a one-liner if there is exactly one empty reply that has no entries
     bool oneLiner = false;
-    if (start && _replies.size() == 1ll) {
+    if (start && _replies.size() == 1ll && !dialog->isAnimatedCutscene() && dialog->cameraModel.empty() &&
+        _currentEntry->cameraAnimation == 0 && _currentEntry->cameraAngle == 0 &&
+        _currentEntry->animations.empty() && _currentEntry->waitFlags == 0 && _currentEntry->fadeType == 0) {
         const Dialog::EntryReply &reply = *_replies[0];
         oneLiner = reply.text.empty() && reply.entries.empty();
     }
     if (!oneLiner && isNonPresentationalEntry()) {
-        pickReply(0);
+        pickReply(0, ReplyMode::Automatic);
         return;
     }
 
     scheduleEndOfEntry();
+    _cameraNode = _currentEntry;
     presentCamera(generation, *_currentEntry);
     onLoadEntry();
     if (!isCurrentConversation(generation)) {
@@ -448,7 +472,7 @@ void Conversation::loadEntry(int index, bool start) {
 
     if (_autoSkip) {
         if (std::optional<bool> skip = _autoSkip->trySkipEntry()) {
-            if (skip.value() && !_paused) {
+            if (skip.value() && isSkippableEntry()) {
                 endCurrentEntry();
             }
         }
@@ -488,28 +512,34 @@ void Conversation::loadVoiceOver() {
     }
 }
 
-static std::string getCameraAnimationName(int ordinal) {
-    return str(boost::format("cut%03dw") % (ordinal - 1200 + 1));
-}
-
 void Conversation::scheduleEndOfEntry() {
-    float duration = kDefaultEntryDuration;
-
-    if (_cameraModel && (_currentEntry->waitFlags & Dialog::WaitFlags::waitAnimFinish)) {
-        std::string animName(getCameraAnimationName(_currentEntry->cameraAnimation));
-        std::shared_ptr<Animation> animation(_cameraModel->getAnimation(animName));
-        if (animation) {
-            duration = animation->length();
-        }
-    } else if (_currentEntry->delay != -1) {
-        duration = static_cast<float>(_currentEntry->delay);
+    const auto &node = *_currentEntry;
+    _effectiveWaitFlags = node.waitFlags;
+    float duration;
+    if (node.delay != -1) {
+        duration = static_cast<float>(std::max(0, node.delay));
+        _effectiveWaitFlags |= Dialog::WaitFlags::explicitDelay;
+    } else if (!node.voResRef.empty() || node.waitFlags != 0) {
+        duration = static_cast<float>(_presentingReply ? _dialog->delayReply : _dialog->delayEntry);
+        if (!node.voResRef.empty() && node.waitFlags == 0) _effectiveWaitFlags |= Dialog::WaitFlags::waitSoundFinish;
     } else if (_currentVoice) {
-        duration = _currentVoice->duration();
+        duration = 0;
+        _effectiveWaitFlags |= Dialog::WaitFlags::waitSoundFinish;
+    } else {
+        // Retain the existing text estimate for ordinary lines. Silent blank
+        // replies and AnimatedCut routing have no invented three-second wait.
+        duration = (_dialog->isAnimatedCutscene() || (_presentingReply && node.text.empty())) ? 0 : kDefaultEntryDuration;
     }
 
     _entryEnded = false;
-    _entryDuration = duration;
+    _entryDuration = std::max(duration, _currentVoice ? _currentVoice->duration() : 0.0f);
     _endEntryTimer.reset(duration);
+}
+
+bool Conversation::isWaiting() const {
+    return ((_effectiveWaitFlags & Dialog::WaitFlags::waitAnimFinish) && _cameraClock.isWaiting()) ||
+           ((_effectiveWaitFlags & Dialog::WaitFlags::waitSoundFinish) && _currentVoice && _currentVoice->isPlaying()) ||
+           ((_effectiveWaitFlags & Dialog::WaitFlags::waitParticipantFinish) && isParticipantAnimationWaiting());
 }
 
 void Conversation::loadReplies() {
@@ -523,6 +553,10 @@ void Conversation::loadReplies() {
             return;
         }
         if (active) {
+            if (link.index < 0 || static_cast<size_t>(link.index) >= dialog->replies.size()) {
+                warn("Dialog: invalid reply link: " + std::to_string(link.index));
+                continue;
+            }
             _replies.push_back(&dialog->getReply(link.index));
         }
     }
@@ -547,18 +581,29 @@ void Conversation::refreshReplies() {
     setReplyLines(std::move(lines));
 }
 
-void Conversation::pickReply(int index) {
-    if (!isCurrentConversation()) {
+void Conversation::pickReply(int index, ReplyMode mode) {
+    if (!isCurrentConversation() || _presentingReply || index < 0 || static_cast<size_t>(index) >= _replies.size()) {
         return;
     }
     const auto generation = _generation;
     debug("Pick reply " + std::to_string(index), LogChannel::Conversation);
     const Dialog::EntryReply &reply = *_replies[index];
+    auto dialog = _dialog;
+    _currentEntry = &reply;
+    _presentingReply = true;
+    _skipRequested = false;
+
+    if (mode == ReplyMode::Manual) {
+        onReplyPicked();
+        if (!isCurrentConversation(generation)) return;
+    } else if (mode == ReplyMode::Automatic) {
+        loadVoiceOver();
+        if (!isCurrentConversation(generation)) return;
+    }
 
     applyStatusSummaryEntries(reply);
 
     // Run reply scripts
-    auto dialog = _dialog;
     runScripts(reply);
 
     // A reply action can start another conversation, replacing this one. Going
@@ -567,7 +612,17 @@ void Conversation::pickReply(int index) {
         return;
     }
 
-    int entryIdx = indexOfFirstActive(reply.entries);
+    if (mode != ReplyMode::Manual) {
+        scheduleEndOfEntry();
+        if (!_endEntryTimer.elapsed() || isWaiting()) return;
+    }
+    completeReply();
+}
+
+void Conversation::completeReply() {
+    const auto generation = _generation;
+    auto dialog = _dialog;
+    int entryIdx = indexOfFirstActive(_currentEntry->entries);
     if (!isCurrentConversation(generation)) {
         return;
     }
@@ -601,14 +656,15 @@ bool Conversation::handle(const input::Event &event) {
 
 bool Conversation::handleMouseButtonDown(const input::MouseButtonEvent &event) {
     if (event.button == input::MouseButton::Left && !_entryEnded && isSkippableEntry()) {
-        _endEntryTimer.reset(0);
+        _skipRequested = true;
         return true;
     }
     return false;
 }
 
 bool Conversation::isSkippableEntry() const {
-    return g_allEntriesSkippable || (_dialog->isSkippable() && !_paused);
+    return !_paused && !_game.isPaused() &&
+           (g_allEntriesSkippable || (_dialog->isSkippable() && (!_game.isTSL() || !_currentEntry->nodeUnskippable)));
 }
 
 bool Conversation::isNonPresentationalEntry() const {
@@ -617,10 +673,10 @@ bool Conversation::isNonPresentationalEntry() const {
            _currentEntry->sound.empty() &&
            _currentEntry->voResRef.empty() &&
            _currentEntry->cameraAnimation == 0 &&
-           _currentEntry->cameraId == 0 &&
+           !_currentEntry->staticCameraId() &&
            _currentEntry->cameraAngle == 0 &&
            _currentEntry->animations.empty() &&
-           _currentEntry->delay == -1;
+           _currentEntry->delay == -1 && _currentEntry->waitFlags == 0 && _currentEntry->fadeType == 0;
 }
 
 void Conversation::endCurrentEntry() {
@@ -629,6 +685,7 @@ void Conversation::endCurrentEntry() {
     }
     const auto generation = _generation;
     _entryEnded = true;
+    _skipRequested = false;
 
     // Stop voice over, if any
     if (_currentVoice) {
@@ -636,13 +693,22 @@ void Conversation::endCurrentEntry() {
         _currentVoice.reset();
     }
 
+    if (_presentingReply) {
+        completeReply();
+        return;
+    }
+
+    if (!_autoPickFirstReply && !_replies.empty() && _dialog->conversationType != ConversationType::Computer) {
+        _cameraNode = _replies.front();
+        presentCamera(generation, *_cameraNode, false);
+    }
     onEntryEnded();
     if (!isCurrentConversation(generation)) {
         return;
     }
 
     if (_autoPickFirstReply) {
-        pickReply(0);
+        pickReply(0, ReplyMode::Automatic);
     } else if (_replies.empty()) {
         debug("Finish (no active replies", LogChannel::Conversation);
         finish();
@@ -692,9 +758,9 @@ void Conversation::update(float dt) {
     if (!isCurrentConversation(generation)) {
         return;
     }
-    if (!_entryEnded) {
+    if (!_entryEnded && !_game.isPaused()) {
         _endEntryTimer.update(dt);
-        if (!_paused && (_endEntryTimer.elapsed() || (_currentVoice && !_currentVoice->isPlaying()))) {
+        if (!_paused && (_skipRequested || (_endEntryTimer.elapsed() && !isWaiting()))) {
             endCurrentEntry();
         }
     }
