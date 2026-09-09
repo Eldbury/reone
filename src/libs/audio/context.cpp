@@ -57,6 +57,11 @@ void Context::setListenerPosition(glm::vec3 position) {
     _listenerPosition = std::move(position);
 }
 
+void Context::setListenerOrientation(glm::vec3 forward, glm::vec3 up) {
+    const ALfloat orientation[] {forward.x, forward.y, forward.z, up.x, up.y, up.z};
+    alListenerfv(AL_ORIENTATION, orientation);
+}
+
 } // namespace audio
 
 } // namespace reone

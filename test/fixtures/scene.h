@@ -41,6 +41,7 @@ public:
     MOCK_METHOD(void, releaseUnrootedNode, (SceneNode &), (override));
 
     MOCK_METHOD(void, addRoot, (std::shared_ptr<ModelSceneNode>), (override));
+    MOCK_METHOD(void, addRenderRoot, (std::shared_ptr<ModelSceneNode>), (override));
     MOCK_METHOD(void, addRoot, (std::shared_ptr<WalkmeshSceneNode>), (override));
     MOCK_METHOD(void, addRoot, (std::shared_ptr<TriggerSceneNode>), (override));
     MOCK_METHOD(void, addRoot, (std::shared_ptr<GrassSceneNode>), (override));

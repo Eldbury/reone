@@ -34,6 +34,10 @@ void ComputerCamGUI::onGUILoaded() {
     returnControl->setOnClick(_onReturn);
 }
 
+void ComputerCamGUI::setLiveFeedVisible(bool visible) {
+    if (auto label = findControl<gui::Label>("LBL_RETURN")) label->setVisible(visible);
+}
+
 bool ComputerCamGUI::handle(const input::Event &event) {
     if (event.type == input::EventType::KeyUp &&
         (event.key.code == input::KeyCode::Escape || event.key.code == input::KeyCode::Return)) {

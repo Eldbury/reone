@@ -25,6 +25,7 @@
 
 #include "../gui.h"
 #include "../dialogcameraclock.h"
+#include "../dialogfade.h"
 #include "../object.h"
 #include "../runtimeref.h"
 #include "../types.h"
@@ -128,6 +129,7 @@ private:
     AutoSkip *_autoSkip {nullptr};
     const resource::Dialog::EntryReply *_cameraNode {nullptr};
     DialogCameraClock _cameraClock;
+    DialogFade _fade;
     bool _presentingReply {false};
     bool _skipRequested {false};
     int _effectiveWaitFlags {0};

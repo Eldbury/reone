@@ -75,6 +75,7 @@ void SceneGraph::clear() {
     // Borrowed from a camera owner which may be released with this scene.
     _activeCamera = nullptr;
     _modelRoots.clear();
+    _renderOnlyRoots.clear();
     _walkmeshRoots.clear();
     _triggerRoots.clear();
     _soundRoots.clear();
@@ -83,6 +84,22 @@ void SceneGraph::clear() {
 }
 
 void SceneGraph::addRoot(std::shared_ptr<ModelSceneNode> node) {
+    if (_renderOnlyRoots.count(node.get())) {
+        throw std::logic_error("Cannot give a render-only root a second animation clock");
+    }
+    _modelRoots.push_back(std::move(node));
+}
+
+void SceneGraph::addRenderRoot(std::shared_ptr<ModelSceneNode> node) {
+    if (!node || &node->graph() != this || node->parent()) {
+        throw std::logic_error("Render-only root must be an unattached model in this scene");
+    }
+    auto existing = std::find(_modelRoots.begin(), _modelRoots.end(), node);
+    if (existing != _modelRoots.end()) {
+        if (_renderOnlyRoots.count(node.get())) return;
+        throw std::logic_error("Cannot take animation ownership from a scene root");
+    }
+    _renderOnlyRoots.insert(node.get());
     _modelRoots.push_back(std::move(node));
 }
 
@@ -103,6 +120,7 @@ void SceneGraph::addRoot(std::shared_ptr<SoundSceneNode> node) {
 }
 
 void SceneGraph::removeRoot(ModelSceneNode &node) {
+    _renderOnlyRoots.erase(&node);
     for (auto it = _activeLights.begin(); it != _activeLights.end();) {
         if (&(*it)->model() == &node) {
             it = _activeLights.erase(it);
@@ -156,7 +174,7 @@ void SceneGraph::update(float dt) {
 void SceneGraph::update(float dt, const std::function<void()> &afterAnimation) {
     if (_updateRoots) {
         for (auto &root : _modelRoots) {
-            root->update(dt);
+            if (!_renderOnlyRoots.count(root.get())) root->update(dt);
         }
         for (auto &root : _grassRoots) {
             root->update(dt);
@@ -966,7 +984,8 @@ std::optional<std::reference_wrapper<ModelSceneNode>> SceneGraph::pickModelRay(c
 
 void SceneGraph::releaseUnrootedNode(SceneNode &node) {
     // This deliberately does not remove rendered roots or alter their ticking.
-    // Private camera trees never enter the culling/rendering caches.
+    // Former render-only roots may still have cached leaf references. Prune
+    // exactly the validated private tree before any of its owners are erased.
     if (node.parent()) {
         throw std::logic_error("Cannot release an attached scene node");
     }
@@ -998,7 +1017,31 @@ void SceneGraph::releaseUnrootedNode(SceneNode &node) {
         }
     };
     validate(node);
-    if (_activeCamera == &node) {
+    auto prune = [&](auto &cache) {
+        cache.erase(std::remove_if(cache.begin(), cache.end(), [&](auto candidate) {
+            return visited.count(candidate) != 0;
+        }), cache.end());
+    };
+    prune(_opaqueMeshes);
+    prune(_transparentMeshes);
+    prune(_shadowMeshes);
+    prune(_lights);
+    prune(_emitters);
+    prune(_activeLights);
+    prune(_flareLights);
+    if (visited.count(_shadowLight)) {
+        _shadowLight = nullptr;
+        _shadowActive = false;
+        _shadowStrength = 0;
+    }
+    for (auto *cache : {&_opaqueLeafs, &_transparentLeafs}) {
+        cache->erase(std::remove_if(cache->begin(), cache->end(), [&](auto &batch) {
+            if (visited.count(batch.first)) return true;
+            prune(batch.second);
+            return batch.second.empty();
+        }), cache->end());
+    }
+    if (visited.count(_activeCamera)) {
         _activeCamera = nullptr;
     }
     if (node.type() == SceneNodeType::Emitter) {

@@ -123,6 +123,7 @@ void Conversation::start(const std::shared_ptr<Dialog> &dialog, const std::share
     _currentEntry = nullptr;
     _cameraNode = nullptr;
     _cameraClock.reset();
+    _fade.reset();
     _presentingReply = false;
     _skipRequested = false;
     _dialog = dialog;
@@ -325,6 +326,7 @@ void Conversation::stop(FinishReason reason, uint64_t generation) {
         _currentEntry = nullptr;
         _cameraNode = nullptr;
         _cameraClock.reset();
+        _fade.reset();
         _presentingReply = false;
         _skipRequested = false;
         _replies.clear();
@@ -448,7 +450,9 @@ void Conversation::loadEntry(int index, bool start) {
 
     scheduleEndOfEntry();
     _cameraNode = _currentEntry;
+    _fade.request(*_currentEntry);
     presentCamera(generation, *_currentEntry);
+    if (!isCurrentConversation(generation)) return;
     onLoadEntry();
     if (!isCurrentConversation(generation)) {
         return;
@@ -539,7 +543,8 @@ void Conversation::scheduleEndOfEntry() {
 bool Conversation::isWaiting() const {
     return ((_effectiveWaitFlags & Dialog::WaitFlags::waitAnimFinish) && _cameraClock.isWaiting()) ||
            ((_effectiveWaitFlags & Dialog::WaitFlags::waitSoundFinish) && _currentVoice && _currentVoice->isPlaying()) ||
-           ((_effectiveWaitFlags & Dialog::WaitFlags::waitParticipantFinish) && isParticipantAnimationWaiting());
+           ((_effectiveWaitFlags & Dialog::WaitFlags::waitParticipantFinish) && isParticipantAnimationWaiting()) ||
+           ((_effectiveWaitFlags & Dialog::WaitFlags::waitFadeFinish) && _fade.isWaiting());
 }
 
 void Conversation::loadReplies() {
@@ -592,6 +597,8 @@ void Conversation::pickReply(int index, ReplyMode mode) {
     _currentEntry = &reply;
     _presentingReply = true;
     _skipRequested = false;
+    _fade.reset();
+    _game.endDialogueCameraNode(*this, generation);
 
     if (mode == ReplyMode::Manual) {
         onReplyPicked();
@@ -613,6 +620,7 @@ void Conversation::pickReply(int index, ReplyMode mode) {
     }
 
     if (mode != ReplyMode::Manual) {
+        _fade.request(reply);
         scheduleEndOfEntry();
         if (!_endEntryTimer.elapsed() || isWaiting()) return;
     }
@@ -686,6 +694,8 @@ void Conversation::endCurrentEntry() {
     const auto generation = _generation;
     _entryEnded = true;
     _skipRequested = false;
+    _fade.reset();
+    _game.endDialogueCameraNode(*this, generation);
 
     // Stop voice over, if any
     if (_currentVoice) {

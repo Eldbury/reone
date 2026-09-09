@@ -57,6 +57,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/game/computer.cpp
     ${TESTS_SOURCE_DIR}/game/dialogcamerasession.cpp
     ${TESTS_SOURCE_DIR}/game/dialogcameraclock.cpp
+    ${TESTS_SOURCE_DIR}/game/dialogfade.cpp
     ${TESTS_SOURCE_DIR}/game/dialogcameraframing.cpp
     ${TESTS_SOURCE_DIR}/game/globalnumber.cpp
     ${TESTS_SOURCE_DIR}/game/mainmenu.cpp
@@ -113,6 +114,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/json/gff.cpp
     ${TESTS_SOURCE_DIR}/resource/archivevalidation.cpp
     ${TESTS_SOURCE_DIR}/resource/cameraanimation.cpp
+    ${TESTS_SOURCE_DIR}/resource/videoeffect.cpp
     ${TESTS_SOURCE_DIR}/resource/dialogcamera.cpp
     ${TESTS_SOURCE_DIR}/resource/extractresources.cpp
     ${TESTS_SOURCE_DIR}/resource/modulediscovery.cpp

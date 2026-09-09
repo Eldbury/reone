@@ -199,6 +199,11 @@ struct ScreenEffectUniforms {
     float ssrPixelStride {4.0f};
     float ssrMaxSteps {32.0f};
     float sharpenAmount {0.25f};
+    // std140 vec4 alignment must not depend on GLM aligned-type build options.
+    alignas(16) glm::vec4 videoColor {1.0f}; // modulation RGB, saturation
+    alignas(16) glm::vec4 videoParams {0.0f}; // scan noise, dream, full screen, time
+    alignas(16) glm::vec4 videoOther {0.0f}; // force sight, fury, unused
+    alignas(16) glm::vec4 dialogueFade {0.0f};
 };
 
 class Context;

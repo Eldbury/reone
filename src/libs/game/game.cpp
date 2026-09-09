@@ -48,6 +48,8 @@
 #include "reone/game/script/routines.h"
 #include "reone/game/surfaces.h"
 #include "reone/graphics/context.h"
+#include "reone/graphics/animation.h"
+#include "reone/graphics/camera/perspective.h"
 #include "reone/graphics/di/services.h"
 #include "reone/graphics/font.h"
 #include "reone/graphics/format/tgawriter.h"
@@ -1531,6 +1533,7 @@ void Game::retireActiveModuleRuntime() {
 
 void Game::retireActiveAreaRuntime() {
     retireConversation(Conversation::FinishReason::RuntimeRetirement);
+    disableVideoEffect();
     unpublishActiveCamera();
     auto module = _module;
     auto area = module ? module->area() : nullptr;
@@ -2479,7 +2482,20 @@ void Game::renderScene() {
     auto &output = scene.render({_options.graphics.width, _options.graphics.height});
     _lastRenderedSceneOutput = &output;
     _services.graphics.uniforms.setLocals(std::bind(&LocalUniforms::reset, std::placeholders::_1));
-    _services.graphics.context.useProgram(_services.graphics.shaderRegistry.get(ShaderProgramId::ndcTexture));
+    const auto fade = _conversation && _conversation->isCurrentConversation()
+                          ? _conversation->_fade.color() : glm::vec4(0);
+    if (_videoEffect.active() || fade.a > 0) {
+        _services.graphics.uniforms.setScreenEffect([&](ScreenEffectUniforms &uniforms) {
+            uniforms.videoColor = glm::vec4(_videoEffect.modulation, _videoEffect.saturation);
+            uniforms.videoParams = {_videoEffect.scanNoise, _videoEffect.dream,
+                                    _videoEffect.dreamFullScreen, (_worldTimeMilliseconds % 600000) * 0.001f};
+            uniforms.videoOther = {_videoEffect.forceSight, _videoEffect.fury, 0, 0};
+            uniforms.dialogueFade = fade;
+        });
+        _services.graphics.context.useProgram(_services.graphics.shaderRegistry.get(ShaderProgramId::dialogueEffect));
+    } else {
+        _services.graphics.context.useProgram(_services.graphics.shaderRegistry.get(ShaderProgramId::ndcTexture));
+    }
     _services.graphics.context.bindTexture(output);
     _services.graphics.meshRegistry.get(MeshName::quadNDC).draw(_services.graphics.statistic);
 }
@@ -3754,6 +3770,7 @@ void Game::updateDialogueCamera(float dt) {
             _dialogueCameraSession->selectedCamera = type;
             _dialogueCameraSession->held = false;
             _dialogueCameraSession->viewAngle = 55.0f;
+            endDialogueCameraNode(*presenter, generation);
         }
     }
     _cameraType = type;
@@ -3769,10 +3786,11 @@ void Game::updateDialogueCamera(float dt) {
     // Sequencing owns the metadata clock. Advance beside the private model,
     // including when local camera construction failed; queries never tick it.
     _conversation->_cameraClock.update(animationTime);
+    _conversation->_fade.update(animationTime);
     if (auto animated = session.animatedCamera) {
         if (type == CameraType::Animated) animated->setFieldOfView(session.viewAngle);
         // Once selected, retained private playback keeps its world clock even
-        // during ordinary/static shots. SceneGraph never advances this model.
+        // during ordinary/static shots. Render-only membership never advances it.
         animated->update(animationTime);
     }
     if (auto camera = getActiveCamera(); camera && type != CameraType::Animated) {
@@ -3784,6 +3802,8 @@ void Game::updateDialogueCamera(float dt) {
 }
 
 void Game::updateCameraListener(Camera &camera) {
+    const auto generation = _conversationGeneration;
+    const auto runtime = _runtimeSessionGeneration;
     glm::vec3 listenerPosition(0.0f);
     if (_cameraType == CameraType::ThirdPerson) {
         auto partyLeader = _party.getLeader();
@@ -3793,6 +3813,17 @@ void Game::updateCameraListener(Camera &camera) {
     } else if (camera.sceneNode()) {
         listenerPosition = camera.sceneNode()->origin();
     }
+    if (camera.sceneNode()) {
+        const auto &pose = camera.sceneNode()->absoluteTransform();
+        const auto forward = -glm::normalize(glm::vec3(pose[2]));
+        const auto up = glm::normalize(glm::vec3(pose[1]));
+        if (_cameraType == CameraType::Static && _conversation &&
+            isDialogueCameraCurrent(*_conversation, _conversation->conversationGeneration())) {
+            listenerPosition += forward * _dialogueCameraSession->microphoneRange;
+        }
+        _services.audio.context.setListenerOrientation(forward, up);
+    }
+    if (generation != _conversationGeneration || runtime != _runtimeSessionGeneration) return;
     _services.audio.context.setListenerPosition(std::move(listenerPosition));
 }
 
@@ -5772,7 +5803,44 @@ void Game::consoleCamLook(const ConsoleArgs &args) {
 }
 
 void Game::consoleCamStatus(const ConsoleArgs &args) {
-    consoleCheckUsage(args, 0, 0, "");
+    consoleCheckUsage(args, 0, 1, "[dialog]");
+    if (args.size() > 1) {
+        if (args[1].value() != "dialog") throw std::runtime_error("Expected camstatus [dialog]");
+        std::ostringstream output;
+        auto active = getActiveCamera();
+        output << "dialog-camera type=" << static_cast<int>(_cameraType);
+        if (_conversation && _conversation->isCurrentConversation()) {
+            const auto &session = *_dialogueCameraSession;
+            const auto node = _conversation->_currentEntry;
+            output << " generation=" << session.generation << " static=" << session.staticCameraId
+                   << " held=" << session.held << " logicalPhase=" << _conversation->_cameraClock.phase()
+                   << " waiting=" << _conversation->isWaiting() << " fade=" << _conversation->_fade.color().a;
+            if (node) output << " angle=" << node->cameraAngle << " ordinal=" << node->cameraAnimation;
+        }
+        if (active && active->sceneNode()) {
+            const auto &pose = active->sceneNode()->absoluteTransform();
+            output << " eye=" << pose[3].x << ',' << pose[3].y << ',' << pose[3].z
+                   << " forward=" << -pose[2].x << ',' << -pose[2].y << ',' << -pose[2].z;
+            if (auto projection = std::dynamic_pointer_cast<PerspectiveCamera>(active->cameraSceneNode()->camera())) {
+                output << " fov=" << glm::degrees(projection->fovy());
+            }
+            for (auto parent = active->sceneNode()->parent(); parent; parent = parent->parent()) {
+                if (auto model = dynamic_cast<ModelSceneNode *>(parent)) {
+                    output << " model=" << model->model().name();
+                    if (!model->animationChannels().empty()) {
+                        const auto &channel = model->animationChannels().front();
+                        output << " clip=" << channel.anim->name() << " phase=" << channel.time
+                               << " length=" << channel.anim->length() << " finished=" << channel.finished;
+                    }
+                    break;
+                }
+            }
+        }
+        output << " effect=" << _videoEffect.active() << " scriptOverride=" << _videoEffectOverride;
+        _console.printLine(output.str());
+        info(output.str());
+        return;
+    }
     auto camera = getConsoleArea()->getCamera<FirstPersonCamera>(CameraType::FirstPerson);
     glm::vec3 pos = camera->position();
     glm::vec3 forward(-glm::sin(camera->facing()) * glm::cos(camera->pitch()),
@@ -6386,13 +6454,18 @@ void Game::consoleAutoSkipReplies(const ConsoleArgs &args) {
 }
 
 void Game::consoleStartConversation(const ConsoleArgs &args) {
-    consoleCheckUsage(args, 0, 1, "[dlg_resref]");
+    consoleCheckUsage(args, 0, 2, "[dlg_resref] [owner_tag]");
 
     auto leader = getConsoleLeader();
     _captureHUDPresentation = false;
     auto resRef = args[1];
     if (resRef) {
-        startDialog(leader, std::string(resRef.value()));
+        std::shared_ptr<Object> owner = leader;
+        if (auto tag = args[2]) {
+            owner = getConsoleArea()->getObjectByTag(std::string(*tag));
+            if (!owner) throw std::runtime_error("Conversation owner not found");
+        }
+        startDialog(owner, std::string(resRef.value()));
         return;
     }
 

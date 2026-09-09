@@ -41,6 +41,7 @@ public:
 class MockContext : public IContext, boost::noncopyable {
 public:
     MOCK_METHOD(void, setListenerPosition, (glm::vec3), (override));
+    MOCK_METHOD(void, setListenerOrientation, (glm::vec3, glm::vec3), (override));
 };
 
 class MockAudioMixer : public IAudioMixer, boost::noncopyable {

@@ -21,6 +21,7 @@ public:
     ComputerCamGUI(Game &game, ServicesView &services, std::function<void()> onReturn);
 
     bool handle(const input::Event &event) override;
+    void setLiveFeedVisible(bool visible);
 
 private:
     std::function<void()> _onReturn;

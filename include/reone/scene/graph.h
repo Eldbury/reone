@@ -112,6 +112,9 @@ public:
     // Roots
 
     virtual void addRoot(std::shared_ptr<ModelSceneNode> node) = 0;
+    // Render membership only. The caller owns animation and must remove the
+    // root before releasing it; never register the same tree under two clocks.
+    virtual void addRenderRoot(std::shared_ptr<ModelSceneNode> node) = 0;
     virtual void addRoot(std::shared_ptr<WalkmeshSceneNode> node) = 0;
     virtual void addRoot(std::shared_ptr<TriggerSceneNode> node) = 0;
     virtual void addRoot(std::shared_ptr<GrassSceneNode> node) = 0;
@@ -193,6 +196,7 @@ public:
     void releaseUnrootedNode(SceneNode &node) override;
 
     void addRoot(std::shared_ptr<ModelSceneNode> node) override;
+    void addRenderRoot(std::shared_ptr<ModelSceneNode> node) override;
     void addRoot(std::shared_ptr<WalkmeshSceneNode> node) override;
     void addRoot(std::shared_ptr<TriggerSceneNode> node) override;
     void addRoot(std::shared_ptr<GrassSceneNode> node) override;
@@ -313,6 +317,7 @@ private:
     // Roots
 
     std::list<std::shared_ptr<ModelSceneNode>> _modelRoots;
+    std::set<const ModelSceneNode *> _renderOnlyRoots;
     std::list<std::shared_ptr<WalkmeshSceneNode>> _walkmeshRoots;
     std::list<std::shared_ptr<TriggerSceneNode>> _triggerRoots;
     std::list<std::shared_ptr<GrassSceneNode>> _grassRoots;

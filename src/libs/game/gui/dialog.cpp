@@ -624,7 +624,11 @@ bool DialogGUI::applyDialogAnimation(const std::string &participant, int ordinal
     }
     if (animType != AnimationType::Invalid) {
         creature->playAnimation(animType);
-        return true;
+        // A valid semantic name can still have no asset (or be rejected while
+        // moving). Do not wait for an unrelated retained participant channel.
+        auto model = std::dynamic_pointer_cast<ModelSceneNode>(creature->sceneNode());
+        const auto name = static_cast<const Object &>(*creature).getAnimationName(animType);
+        return model && !name.empty() && model->isAnimationPlaying(name);
     }
     return false;
 }

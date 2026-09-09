@@ -58,6 +58,7 @@ private:
     Presentation _presentation {Presentation::Normal};
 
     void returnFromCamera();
+    bool isCameraPresentation() const;
 
     struct Controls {
         std::shared_ptr<gui::Label> LBL_BAR1;

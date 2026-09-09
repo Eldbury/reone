@@ -132,6 +132,7 @@ void Shaders::init() {
     auto fragText = initShader(ShaderType::Fragment, kFragText);
     auto fragTexture = initShader(ShaderType::Fragment, kFragTexture);
     auto fragTextureNoPerspective = initShader(ShaderType::Fragment, kFragTextureNoPerspective);
+    auto fragDialogueEffect = initShader(ShaderType::Fragment, "f_dlg_effect");
     auto fragIrradiance = initShader(ShaderType::Fragment, kFragPBRIrradiance);
     auto fragPBRBRDF = initShader(ShaderType::Fragment, kFragPBRBRDF);
     auto fragPBRPrefilter = initShader(ShaderType::Fragment, kFragPBRPrefilter);
@@ -156,6 +157,7 @@ void Shaders::init() {
     _shaderRegistry.add(ShaderProgramId::mvpIcon, initShaderProgram({vertMVP, fragIcon}));
     _shaderRegistry.add(ShaderProgramId::mvpTexture, initShaderProgram({vertMVP, fragTexture}));
     _shaderRegistry.add(ShaderProgramId::ndcTexture, initShaderProgram({vertPassthrough, fragTextureNoPerspective}));
+    _shaderRegistry.add(ShaderProgramId::dialogueEffect, initShaderProgram({vertPassthrough, fragDialogueEffect}));
     _shaderRegistry.add(ShaderProgramId::oitBlend, initShaderProgram({vertPassthrough, fragOITBlend}));
     _shaderRegistry.add(ShaderProgramId::oitModel, initShaderProgram({vertModel, fragOITModel}));
     _shaderRegistry.add(ShaderProgramId::oitParticles, initShaderProgram({vertParticles, fragOITParticles}));

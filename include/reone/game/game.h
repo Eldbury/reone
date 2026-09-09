@@ -22,6 +22,7 @@
 #include "reone/graphics/types.h"
 #include "reone/input/event.h"
 #include "reone/movie/movie.h"
+#include "reone/resource/videoeffect.h"
 #include "reone/script/routines.h"
 #include "reone/system/logutil.h"
 
@@ -184,6 +185,8 @@ public:
     bool consumeTimingDiscontinuity();
 
     void playVideo(const std::string &name);
+    void enableVideoEffect(int row);
+    void disableVideoEffect();
 
     bool isPaused() const { return _paused; }
     bool isTSL() const { return _gameId == resource::GameID::TSL; }
@@ -1001,9 +1004,14 @@ private:
         bool hasShot {false};
         bool held {false};
         float viewAngle {45.0f};
+        float microphoneRange {0.0f};
+        resource::VideoEffect previousVideoEffect;
+        bool previousVideoOverride {false};
     };
     std::optional<DialogueCameraSession> _dialogueCameraSession;
     uint64_t _conversationGeneration {0};
+    resource::VideoEffect _videoEffect;
+    bool _videoEffectOverride {false};
 
     uint64_t acquireDialogueCamera(Conversation &conversation);
     void initializeDialogueCamera(Conversation &conversation, uint64_t generation);
@@ -1013,6 +1021,8 @@ private:
     CameraType dialogueCameraSelection(const Conversation &conversation, uint64_t generation, int &cameraId) const;
     bool isDialogueCameraHeld(const Conversation &conversation, uint64_t generation) const;
     void updateCameraListener(Camera &camera);
+    void endDialogueCameraNode(Conversation &conversation, uint64_t generation);
+    void selectDialogueVideoEffect(Conversation &conversation, uint64_t generation, int row, bool computerCamera);
     bool ownsDialogueCamera(const Conversation &conversation, uint64_t generation) const;
     bool isDialogueCameraCurrent(const Conversation &conversation, uint64_t generation) const;
     void releaseDialogueCamera(Conversation &conversation, uint64_t generation, bool restoreGameplay);

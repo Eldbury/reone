@@ -83,3 +83,57 @@ positions would be wrong for these fixtures.
 
 
 Participant wait correction (CAM6): K1 IsAnimationPlayingInDialog0x4c4f8..4569 returns ANY active staged participant; K2 same symbol0x26531a..539e returns ALL (early false at0x265380). K1 IsLoopingDialogAnimation0x4f300 and IsFireForgetDialogAnimation0x4ed04 include both table flags and broad participant cut bands. K2 reconstructed code is accurate for this ALL difference, but must not be projected onto K1. This explains companion loops beside a finite actor in K2 WaitFlags4 content. Implement K1 ANY/K2 ALL against current requested participant channels, including loops, while treating an empty list or missing/lost request as nonwaiting (safe divergence from K2 empty-list true/null dereference). No participant namespace narrowing. Actual model/channel state is local today; downstream MP must supply authoritative participant animation activity, not observer rendering. Exact semantic 2DA overlay/current-ordinal equivalence remains a limitation of existing participant playback.
+
+## Framing, audio and presentation effects
+
+`swbehaviorcameradialog.cpp` in the supplied K2 reconstruction, cross-checked
+against the K1/K2 binary traces retained with the reconnaissance, supplies the
+angle 1/2/3 geometry and OldHitCheck distinction. Tests use independent numeric
+frames for their constants, not screenshots as geometric oracles. Angle 0 uses
+the recovered 19-shot sequence with a deterministic session start. Exact vanilla
+seed/randomness, controller blending and multi-ray collision scoring are not
+claimed. The implementation uses walkmesh obstruction, preserves line-of-action
+side for up to four pairs, and samples rendered CAMERAHOOK positions after model
+animation. OldHitCheck uses rest hook heights; the close-shot branch adds the
+first height to both endpoints. It never substitutes TALKDUMMY.
+
+Binary `UpdateSoundEngine` uses forward `-zdir`, up `ydir`, with static-camera
+microphone position `cameraPosition - zdir * MicRange`. Entry/reply cleanup clears
+this microphone state without releasing the retained camera. Existing Reone
+third-person listener position policy is preserved.
+
+K1/K2 `SetComputerCameraShot` differs from cinematic `UpdateShotCamera`: computer
+`CamVidEffect=-1` selects videoeffects row 0, while cinematic -1 requests disabled
+(-2). Computer -2 explicitly disables the effect; ordinary disable requests
+respect the script override flag. Successful animated selection bypasses this
+effect dispatcher and retains the current effect. `EnableVideoEffect` sets the
+script override; `DisableVideoEffect` clears it. Session teardown restores the
+captured local effect policy before end/abort scripts; full Area retirement
+clears transient effects. This is safe ownership policy, not a reproduction of
+any vanilla effect leak.
+
+Metadata-only shipped row 0: modulation `(1,1.4,2)`, saturation `.15`, scan noise
+on. K1 reads unsuffixed columns; K2 PC reads `_pc`, not `_xbox`. K2 row 3
+clairvoyance is used extensively by `kreiatch`; it is not treated as an obscure
+unused field. Exact noise and K2 dream/Force Sight/fury shader algorithms remain
+unverified: the renderer supplies bounded visual approximations, and does not
+implement Force Sight alignment silhouettes. Global fade script VM routines and
+cross-module global fade handoff are outside this DLG fade implementation.
+
+K1 `computercamera` and K2 `computercam_p` each contain only `LBL_RETURN`
+(strrefs 48226 and 48759 respectively). Recovered `SetLiveFeedMessageVisible`
+operates that label; effect 10/-2 hide it. Missing static destination returns to
+the terminal presentation without deciding dialogue progression.
+
+Fade types 1/2 are immediate out/in (authored length ignored); 3/4 are timed
+in/out. Fade delay, length and color are carried into the same logical fade
+clock used by wait bit 8. Automatic blank replies apply fade independently of
+camera selection. Invalid/nonfinite times become zero and colors are finite
+clamped values: this is malformed-input safety, not a vanilla sanitation claim.
+
+K1 `m41ad_c01_cam` contains `ringfade` light/scale controllers. Camera model
+render membership is therefore necessary even though most camera trees contain
+only dummy nodes. Explicit render-only roots preserve private animation ownership
+and normal scene light/mesh collection. Cleanup removes registration and cached
+references before releasing mutable nodes. Visible/hidden children do not change
+the number of model advances.

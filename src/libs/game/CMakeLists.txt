@@ -18,6 +18,7 @@ set(GAME_SOURCE_DIR ${CMAKE_SOURCE_DIR}/src/libs/game)
 
 set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/dialogcameraclock.h
+    ${GAME_INCLUDE_DIR}/dialogfade.h
     ${GAME_INCLUDE_DIR}/menupresentation.h
     ${GAME_INCLUDE_DIR}/action.h
     ${GAME_INCLUDE_DIR}/action/attackobject.h
@@ -492,6 +493,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/game.cpp
     ${GAME_SOURCE_DIR}/dialogcamerasession.cpp
     ${GAME_SOURCE_DIR}/dialogcameraclock.cpp
+    ${GAME_SOURCE_DIR}/dialogfade.cpp
     ${GAME_SOURCE_DIR}/itemdescription.cpp
     ${GAME_SOURCE_DIR}/gui/actionbar.cpp
     ${GAME_SOURCE_DIR}/gui/actionslot.cpp

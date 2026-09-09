@@ -127,7 +127,8 @@ protected:
         normal = std::make_shared<NiceMock<MockGUI>>();
         camera = std::make_shared<NiceMock<MockGUI>>();
         returnControl = std::make_shared<Label>(*camera, svc.scene.graphs, svc.graphics, svc.resource);
-        EXPECT_CALL(*camera, findControl("LBL_RETURN")).WillOnce(Return(returnControl));
+        ON_CALL(*camera, findControl("LBL_RETURN")).WillByDefault(Return(returnControl));
+        EXPECT_CALL(*camera, findControl("LBL_RETURN")).Times(AtLeast(1));
         EXPECT_CALL(*camera, setBackground(_)).Times(0);
         EXPECT_CALL(engine.guiModule().guis(), get(GetParam() == GameID::KotOR ? "computer" : "computer_p", _))
             .WillOnce(Return(normal));
@@ -352,3 +353,16 @@ TEST_P(ComputerGUITest, automatic_reply_script_replacement_preserves_new_convers
 INSTANTIATE_TEST_SUITE_P(RetailGames, ComputerGUITest, Values(GameID::KotOR, GameID::TSL));
 
 } // namespace
+
+TEST_P(ComputerGUITest, authored_effect_hides_feed_label_without_disabling_keyboard_return) {
+    for (int effect : {-2, 10, -1}) {
+        auto dialog = computerDialog();
+        dialog->entries[0].camVidEffect = effect;
+        computer->start(dialog, nullptr);
+        expectRender(true);
+        EXPECT_EQ(effect == -1, returnControl->isVisible());
+        const auto ended = computer->ends;
+        EXPECT_TRUE(computer->handle(key(input::KeyCode::Escape)));
+        EXPECT_EQ(ended + 1, computer->ends);
+    }
+}

@@ -15,6 +15,7 @@
 #include "reone/graphics/modelnode.h"
 #include "reone/scene/node/camera.h"
 #include "reone/scene/node/dummy.h"
+#include "reone/scene/node/light.h"
 #include "reone/scene/node/particle.h"
 #include "reone/scene/collision.h"
 
@@ -48,6 +49,9 @@ public:
     static void pick(Conversation &conversation) { conversation.pickReply(0); }
     static void endEntry(Conversation &conversation) { conversation.endCurrentEntry(); }
     static bool entryEnded(Conversation &conversation) { return conversation._entryEnded; }
+    static glm::vec4 fade(Conversation &conversation) { return conversation._fade.color(); }
+    static const VideoEffect &effect(Game &game) { return game._videoEffect; }
+    static bool effectOverride(Game &game) { return game._videoEffectOverride; }
     static bool waiting(Conversation &conversation) { return conversation.isWaiting(); }
     static float clockPhase(Conversation &conversation) { return conversation._cameraClock.phase(); }
     static void publish(Conversation &conversation, uint64_t generation, float fov) {
@@ -132,6 +136,11 @@ public:
         auto node = SceneGraph::newModel(model, usage);
         allocations.push_back(node);
         if (usage == scene::ModelUsage::Camera) cameraModel = node;
+        return node;
+    }
+    std::shared_ptr<scene::LightSceneNode> newLight(scene::ModelSceneNode &model, graphics::ModelNode &source) override {
+        auto node = SceneGraph::newLight(model, source);
+        allocations.push_back(node);
         return node;
     }
     std::shared_ptr<scene::ParticleSceneNode> newParticle(scene::EmitterSceneNode &emitter) override {
@@ -292,9 +301,10 @@ protected:
         game->startDialog(player, resource->resRef);
     }
 
-    std::shared_ptr<StaticCamera> addStatic(int id, float fov = 60) {
+    std::shared_ptr<StaticCamera> addStatic(int id, float fov = 60, float mic = 0) {
         auto data = Gff::Builder().field(Gff::Field::newInt("CameraID", id))
             .field(Gff::Field::newFloat("FieldOfView", fov))
+            .field(Gff::Field::newFloat("MicRange", mic))
             .field(Gff::Field::newVector("Position", glm::vec3(20, 30, 40)))
             .field(Gff::Field::newOrientation("Orientation", glm::quat(1, 0, 0, 0))).build();
         auto camera = game->newStaticCamera();
@@ -324,6 +334,14 @@ protected:
     void useCameraModel(std::shared_ptr<graphics::Model> model) {
         cameraResource = std::move(model);
         ON_CALL(engine.resourceModule().models(), get("authored_camera")).WillByDefault(Return(cameraResource));
+    }
+
+    void videoTable() {
+        std::shared_ptr<TwoDA> table = TwoDA::Builder().columns({"enablesaturation", "modulationred", "modulationgreen", "modulationblue", "saturation",
+                    "modulationred_pc", "modulationgreen_pc", "modulationblue_pc", "saturation_pc", "enablescannoise"})
+            .row({"1", "1", "1.4", "2", "0.15", "1", "1.4", "2", "0.15", "1"})
+            .row({"1", "2.4", "0.4", "0.4", "0.2", "2.4", "0.4", "0.4", "0.2", "0"}).build();
+        ON_CALL(engine.resourceModule().twoDas(), get("videoeffects")).WillByDefault(Return(table));
     }
 
     void expectReleased(bool restored = true) {
@@ -1063,6 +1081,10 @@ TEST_P(DialogueCameraSessionTest, missing_static_lookup_clears_old_selection_and
     Access::tick(*game, 0);
     EXPECT_EQ(GameCameraType::Dialog, game->cameraType());
     EXPECT_NE(staticCamera->sceneNode().get(), &graph->camera()->get());
+    EXPECT_CALL(*security, render()).Times(0);
+    EXPECT_CALL(*terminal, render()).Times(1);
+    computer->render(); // Removed static destination cannot leave the overlay active.
+    EXPECT_FALSE(Access::effect(*game).active());
 }
 
 TEST_P(DialogueCameraSessionTest, game_pause_freezes_private_camera_with_world_animation) {
@@ -1758,3 +1780,251 @@ TEST_P(DialogueCameraSessionTest, automatic_angle_sequence_is_session_local_and_
 INSTANTIATE_TEST_SUITE_P(K1AndK2, DialogueCameraSessionTest, Values(GameID::KotOR, GameID::TSL));
 
 } // namespace
+
+TEST_P(DialogueCameraSessionTest, fade_wait_uses_world_clock_final_frame_and_clears_before_reply_menu) {
+    auto resource = dialogue("fade_wait", false);
+    auto &entry = resource->entries[0];
+    entry.delay = 0;
+    entry.waitFlags = Dialog::WaitFlags::waitFadeFinish;
+    entry.fadeType = 4;
+    entry.fadeDelay = 0.25f;
+    entry.fadeLength = 0.75f;
+    entry.fadeColor = {0.2f, 0.4f, 0.6f};
+    start(resource);
+    EXPECT_TRUE(Access::waiting(*dialog));
+    game->setPaused(true);
+    game->update(2);
+    EXPECT_FLOAT_EQ(0, Access::fade(*dialog).a);
+    game->setPaused(false);
+    game->update(0.625f);
+    EXPECT_FLOAT_EQ(0.5f, Access::fade(*dialog).a);
+    game->update(0.375f);
+    EXPECT_FLOAT_EQ(1, Access::fade(*dialog).a);
+    EXPECT_FALSE(Access::waiting(*dialog));
+    EXPECT_FALSE(Access::entryEnded(*dialog));
+    game->update(0);
+    EXPECT_TRUE(Access::entryEnded(*dialog));
+    EXPECT_EQ(glm::vec4(0), Access::fade(*dialog));
+}
+
+TEST_P(DialogueCameraSessionTest, automatic_reply_fade_waits_without_selecting_its_authored_camera) {
+    auto resource = cameraSequence("reply_fade", 2);
+    auto &reply = resource->replies[0];
+    reply.text.clear();
+    reply.cameraAnimation = 1201;
+    reply.delay = 0;
+    reply.fadeType = 3;
+    reply.fadeLength = 1;
+    reply.waitFlags = Dialog::WaitFlags::waitFadeFinish;
+    start(resource);
+    Access::endEntry(*dialog);
+    EXPECT_EQ(&reply, Access::entry(*dialog));
+    EXPECT_TRUE(Access::waiting(*dialog));
+    EXPECT_FLOAT_EQ(1, Access::fade(*dialog).a);
+    auto model = graph->cameraModel.lock();
+    EXPECT_EQ("cut001w", model->animationChannels().front().anim->name());
+    game->update(1);
+    EXPECT_EQ(&reply, Access::entry(*dialog));
+    game->update(0);
+    EXPECT_EQ(&resource->entries[1], Access::entry(*dialog));
+    EXPECT_EQ(glm::vec4(0), Access::fade(*dialog));
+}
+
+TEST_P(DialogueCameraSessionTest, explicit_skip_and_cross_gui_replacement_release_fade_and_wait_state) {
+    auto resource = dialogue("skip_fade", false);
+    resource->skippable = true;
+    resource->entries[0].fadeType = 4;
+    resource->entries[0].fadeLength = 10;
+    resource->entries[0].waitFlags = Dialog::WaitFlags::waitFadeFinish;
+    start(resource);
+    game->update(1);
+    Access::endEntry(*dialog);
+    EXPECT_EQ(glm::vec4(0), Access::fade(*dialog));
+    start(resource);
+    game->update(1);
+    start(dialogue("fade_replacement", false, true));
+    EXPECT_EQ(glm::vec4(0), Access::fade(*dialog));
+    EXPECT_EQ(glm::vec4(0), Access::fade(*computer));
+    Access::finish(*dialog);
+    EXPECT_EQ(computer, Access::active(*game));
+}
+
+TEST_P(DialogueCameraSessionTest, static_microphone_uses_current_pose_and_resets_at_node_end_and_finish) {
+    auto camera = addStatic(0, 60, 3);
+    glm::mat4 rotated(1);
+    rotated[0] = {0, -1, 0, 0};
+    rotated[1] = {0, 0, 1, 0};
+    rotated[2] = {-1, 0, 0, 0};
+    rotated[3] = {20, 30, 40, 1};
+    camera->sceneNode()->setLocalTransform(rotated);
+    auto resource = dialogue("static_microphone", false, true);
+    resource->entries[0].cameraAngle = 6;
+    glm::vec3 forward(0), up(0);
+    auto &audio = static_cast<audio::MockContext &>(engine.services().audio.context);
+    EXPECT_CALL(audio, setListenerOrientation(_, _)).Times(AnyNumber())
+        .WillRepeatedly(Invoke([&](glm::vec3 f, glm::vec3 u) { forward = f; up = u; }));
+    start(resource);
+    Access::tick(*game, 0);
+    EXPECT_EQ(glm::vec3(1, 0, 0), forward);
+    EXPECT_EQ(glm::vec3(0, 0, 1), up);
+    EXPECT_EQ(glm::vec3(23, 30, 40), listener);
+    Access::endEntry(*computer);
+    Access::tick(*game, 0);
+    EXPECT_EQ(camera->sceneNode()->origin(), listener);
+    Access::finish(*computer);
+    expectReleased();
+    EXPECT_EQ(-glm::normalize(glm::vec3(gameplayCamera->absoluteTransform()[2])), forward);
+    Mock::VerifyAndClearExpectations(&audio);
+}
+
+TEST_P(DialogueCameraSessionTest, cinematic_static_is_untinted_while_terminal_static_defaults_to_security_effect) {
+    videoTable();
+    addStatic(0);
+    auto resource = dialogue("cinematic_static", false);
+    resource->entries[0].cameraAngle = 6;
+    start(resource);
+    EXPECT_FALSE(Access::effect(*game).active());
+    resource = dialogue("terminal_static", false, true);
+    resource->entries[0].cameraAngle = 6;
+    start(resource);
+    EXPECT_TRUE(Access::effect(*game).scanNoise);
+    EXPECT_EQ(glm::vec3(1, 1.4f, 2), Access::effect(*game).modulation);
+    Access::endEntry(*computer);
+    EXPECT_FALSE(Access::effect(*game).active());
+    Access::finish(*computer);
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, script_effect_override_survives_ordinary_nodes_and_animated_selection_retains_effect) {
+    videoTable();
+    auto resource = cameraSequence("retained_effect", 3);
+    resource->entries[0].cameraAnimation = 0;
+    resource->entries[0].cameraAngle = 2;
+    resource->entries[0].camVidEffect = 1;
+    resource->entries[1].camVidEffect = 0; // Animated selection does not dispatch this row.
+    resource->entries[2].cameraAnimation = 0;
+    resource->entries[2].cameraAngle = 2;
+    start(resource);
+    EXPECT_EQ(glm::vec3(2.4f, 0.4f, 0.4f), Access::effect(*game).modulation);
+    Access::pick(*dialog);
+    EXPECT_EQ(glm::vec3(2.4f, 0.4f, 0.4f), Access::effect(*game).modulation);
+    game->enableVideoEffect(0);
+    Access::pick(*dialog);
+    EXPECT_TRUE(Access::effect(*game).scanNoise);
+    game->disableVideoEffect();
+    EXPECT_FALSE(Access::effect(*game).active());
+    Access::finish(*dialog);
+    EXPECT_FALSE(Access::effect(*game).active());
+}
+
+TEST_P(DialogueCameraSessionTest, effect_restoration_precedes_end_script_and_old_finish_cannot_clear_replacement) {
+    videoTable();
+    game->enableVideoEffect(0);
+    auto first = dialogue("effect_end", false);
+    first->entries[0].camVidEffect = 1;
+    first->endScript = "effect_replace";
+    auto next = dialogue("effect_next", false, true);
+    next->entries[0].camVidEffect = 1;
+    resources[next->resRef] = next;
+    EXPECT_CALL(engine.resourceModule().scripts(), get("effect_replace"))
+        .WillOnce(Invoke([&](const std::string &) {
+            EXPECT_TRUE(Access::effect(*game).scanNoise);
+            EXPECT_TRUE(Access::effectOverride(*game));
+            start(next);
+            return nullptr;
+        }));
+    start(first);
+    const auto generation = Access::generation(*dialog);
+    Access::finish(*dialog);
+    Access::staleCameraRequests(*game, *dialog, generation);
+    EXPECT_EQ(computer, Access::active(*game));
+    EXPECT_EQ(glm::vec3(2.4f, 0.4f, 0.4f), Access::effect(*game).modulation);
+    Access::finish(*computer);
+    EXPECT_TRUE(Access::effect(*game).scanNoise);
+    Access::retireArea(*game);
+    EXPECT_FALSE(Access::effect(*game).active());
+    EXPECT_FALSE(Access::effectOverride(*game));
+    EXPECT_FALSE(graph->camera());
+}
+
+TEST_P(DialogueCameraSessionTest, effect_resource_reentrancy_cannot_publish_or_stage_an_old_node) {
+    videoTable();
+    auto next = dialogue("effect_provider_replacement", true, true);
+    auto first = dialogue("effect_provider_old", false);
+    first->entries[0].camVidEffect = 0;
+    EXPECT_CALL(engine.resourceModule().twoDas(), get("videoeffects"))
+        .WillOnce(Invoke([&](const std::string &) {
+            start(next);
+            return TwoDA::Builder().columns({"enablescannoise"}).row({"1"}).build();
+        }));
+    start(first);
+    EXPECT_EQ(computer, Access::active(*game));
+    EXPECT_FALSE(Access::effect(*game).active());
+    EXPECT_EQ(&next->entries[0], Access::entry(*computer));
+    Access::tick(*game, 0);
+    EXPECT_EQ(GameCameraType::Animated, game->cameraType());
+}
+
+TEST_P(DialogueCameraSessionTest, partial_camera_startup_effect_failure_restores_only_its_own_policy) {
+    videoTable();
+    game->enableVideoEffect(0);
+    auto resource = dialogue("effect_failure", true);
+    resource->entries[0].cameraAnimation = 0;
+    resource->entries[0].cameraAngle = 2;
+    resource->entries[0].camVidEffect = 1;
+    EXPECT_CALL(engine.resourceModule().twoDas(), get("videoeffects"))
+        .WillOnce(Throw(std::runtime_error("effect provider failure")));
+    EXPECT_THROW(start(resource), std::runtime_error);
+    expectReleased();
+    EXPECT_TRUE(Access::effect(*game).scanNoise);
+    EXPECT_TRUE(Access::effectOverride(*game));
+}
+
+TEST_P(DialogueCameraSessionTest, camera_child_light_is_rendered_without_a_second_animation_clock_and_releases_cleanly) {
+    auto root = modelResource("light_camera_template")->rootNode();
+    auto hook = root->children().front();
+    hook->setLight(std::make_shared<graphics::ModelNode::Light>());
+    auto clip = std::make_shared<graphics::Animation>("cut001w", 2, 0, "root", root, std::vector<graphics::Animation::Event> {});
+    auto asset = std::make_shared<graphics::Model>("authored_camera", 0, root,
+                 std::vector<std::shared_ptr<graphics::Animation>> {clip}, "", 1);
+    asset->init();
+    useCameraModel(asset);
+    start(dialogue("camera_child_light", true));
+    auto model = graph->cameraModel.lock();
+    auto light = dynamic_cast<scene::LightSceneNode *>(model->getNodeByName("camerahook"));
+    ASSERT_TRUE(light);
+    light->setRadius(100);
+    graph->addRenderRoot(model); // Idempotent render membership.
+    EXPECT_THROW(graph->addRoot(model), std::logic_error);
+    game->update(0.25f);
+    EXPECT_FLOAT_EQ(0.25f, model->animationChannels().front().time);
+    EXPECT_TRUE(light->isActive()); // Scene lighting really collected the child.
+    light->setEnabled(false);
+    game->update(0.25f);
+    EXPECT_FLOAT_EQ(0.5f, model->animationChannels().front().time);
+    EXPECT_FALSE(light->isActive());
+    light = nullptr;
+    model.reset();
+    Access::finish(*dialog);
+    expectReleased();
+    game->update(0.25f); // Cached scene lighting must not refer to the freed child.
+}
+
+TEST_P(DialogueCameraSessionTest, missing_semantic_participant_asset_does_not_wait_for_a_retained_cut_clip) {
+    auto actorModel = cameraWithClips({"cut001"});
+    retainedTestModels.push_back(actorModel);
+    auto node = graph->newModel(*actorModel, scene::ModelUsage::Creature);
+    TestGameModule::setAreaRuntimeSceneNode(*player, node);
+    std::shared_ptr<TwoDA> table = TwoDA::Builder().columns({"name"}).row({"greeting"}).build();
+    ON_CALL(engine.resourceModule().twoDas(), get("dialoganimations")).WillByDefault(Return(table));
+    auto resource = cameraSequence("missing_semantic_asset", 2);
+    resource->entries[0].animations = {{kObjectTagPlayer, 1000}};
+    resource->entries[1].animations = {{kObjectTagPlayer, 10000}};
+    resource->entries[1].waitFlags = Dialog::WaitFlags::waitParticipantFinish;
+    start(resource);
+    ASSERT_TRUE(node->isAnimationPlaying("cut001"));
+    Access::pick(*dialog);
+    EXPECT_TRUE(node->isAnimationPlaying("cut001"));
+    EXPECT_FALSE(node->isAnimationPlaying("greeting"));
+    EXPECT_FALSE(Access::waiting(*dialog));
+}

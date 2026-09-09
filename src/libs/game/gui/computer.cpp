@@ -48,7 +48,7 @@ bool ComputerGUI::handle(const input::Event &event) {
     if (!isCurrentConversation()) {
         return false;
     }
-    if (_presentation == Presentation::Camera) {
+    if (isCameraPresentation()) {
         return _cameraGUI.handle(event);
     }
     return Conversation::handle(event);
@@ -60,13 +60,13 @@ void ComputerGUI::update(float dt) {
     if (!isCurrentConversation(generation)) {
         return;
     }
-    if (_presentation == Presentation::Camera) {
+    if (isCameraPresentation()) {
         _cameraGUI.update(dt);
     }
 }
 
 void ComputerGUI::render() {
-    if (_presentation == Presentation::Camera) {
+    if (isCameraPresentation()) {
         _cameraGUI.render();
     } else {
         Conversation::render();
@@ -84,8 +84,9 @@ void ComputerGUI::onFinish() {
 void ComputerGUI::onLoadEntry() {
     int cameraId = 0;
     _presentation = getCamera(cameraId) == CameraType::Static ? Presentation::Camera : Presentation::Normal;
-    if (_presentation == Presentation::Camera) {
+    if (isCameraPresentation()) {
         _cameraGUI.clearSelection();
+        _cameraGUI.setLiveFeedVisible(_currentEntry->camVidEffect != -2 && _currentEntry->camVidEffect != 10);
     }
 }
 
@@ -93,8 +94,13 @@ void ComputerGUI::onEntryEnded() {
     _presentation = Presentation::Normal;
 }
 
+bool ComputerGUI::isCameraPresentation() const {
+    int id;
+    return _presentation == Presentation::Camera && getCamera(id) == CameraType::Static;
+}
+
 void ComputerGUI::returnFromCamera() {
-    if (_presentation == Presentation::Camera) {
+    if (isCameraPresentation()) {
         endCurrentEntry();
     }
 }

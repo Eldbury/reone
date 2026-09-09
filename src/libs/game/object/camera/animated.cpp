@@ -53,6 +53,7 @@ void AnimatedCamera::resetPlayback() {
         _model->detach(*_sceneNode);
     }
     if (_model) {
+        _model->graph().removeRoot(*_model);
         _model->graph().releaseUnrootedNode(*_model);
         _model.reset();
     }
@@ -94,7 +95,11 @@ void AnimatedCamera::update(float dt) {
 void AnimatedCamera::playAnimation(int animNumber) {
     const auto decoded = resource::decodeCameraAnimation(animNumber);
     if (!_model || !decoded.inSelectionRange) return;
-    _playbackStarted = true;
+    if (!_playbackStarted) {
+        _model->setCullingEnabled(false);
+        _model->graph().addRenderRoot(_model);
+        _playbackStarted = true;
+    }
     const auto clip = resource::findCameraClip(*_modelResource, decoded);
     if (clip.animation) {
         const bool restart = _model->isAnimationFinished();

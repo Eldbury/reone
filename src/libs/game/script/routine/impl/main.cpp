@@ -4699,7 +4699,8 @@ static Variable EnableVideoEffect(const std::vector<Variable> &args, const Routi
     // Transform
 
     // Execute
-    throw RoutineNotImplementedException("EnableVideoEffect");
+    ctx.game.enableVideoEffect(nEffectType);
+    return Variable::ofNull();
 }
 
 static Variable StartNewModule(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -4740,7 +4741,8 @@ static Variable StartNewModule(const std::vector<Variable> &args, const RoutineC
 
 static Variable DisableVideoEffect(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    throw RoutineNotImplementedException("DisableVideoEffect");
+    ctx.game.disableVideoEffect();
+    return Variable::ofNull();
 }
 
 static Variable GetWeaponRanged(const std::vector<Variable> &args, const RoutineContext &ctx) {

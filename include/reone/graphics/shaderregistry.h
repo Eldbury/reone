@@ -43,6 +43,7 @@ struct ShaderProgramId {
     static constexpr char aabbColor[] = "aabb_color";
     static constexpr char mvpTexture[] = "mvp_texture";
     static constexpr char ndcTexture[] = "ndc_texture";
+    static constexpr char dialogueEffect[] = "dialogue_effect";
     static constexpr char oitBlend[] = "oit_blend";
     static constexpr char oitModel[] = "oit_model";
     static constexpr char oitParticles[] = "oit_particles";

@@ -26,6 +26,7 @@ public:
     virtual ~IContext() = default;
 
     virtual void setListenerPosition(glm::vec3 position) = 0;
+    virtual void setListenerOrientation(glm::vec3 forward, glm::vec3 up) = 0;
 };
 
 class Context : public IContext, boost::noncopyable {
@@ -36,6 +37,7 @@ public:
     void deinit();
 
     void setListenerPosition(glm::vec3 position) override;
+    void setListenerOrientation(glm::vec3 forward, glm::vec3 up) override;
 
 private:
     ALCdevice *_device {nullptr};

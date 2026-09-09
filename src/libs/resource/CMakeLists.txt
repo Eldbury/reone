@@ -20,6 +20,7 @@ set(RESOURCE_HEADERS
     ${RESOURCE_INCLUDE_DIR}/odysseyroots.h
     ${RESOURCE_INCLUDE_DIR}/2da.h
     ${RESOURCE_INCLUDE_DIR}/cameraanimation.h
+    ${RESOURCE_INCLUDE_DIR}/videoeffect.h
     ${RESOURCE_INCLUDE_DIR}/cameraclip.h
     ${RESOURCE_INCLUDE_DIR}/container.h
     ${RESOURCE_INCLUDE_DIR}/container/erf.h
@@ -132,6 +133,7 @@ set(RESOURCE_SOURCES
     ${RESOURCE_SOURCE_DIR}/di/module.cpp
     ${RESOURCE_SOURCE_DIR}/dialog.cpp
     ${RESOURCE_SOURCE_DIR}/cameraanimation.cpp
+    ${RESOURCE_SOURCE_DIR}/videoeffect.cpp
     ${RESOURCE_SOURCE_DIR}/cameraclip.cpp
     ${RESOURCE_SOURCE_DIR}/director.cpp
     ${RESOURCE_SOURCE_DIR}/format/2dareader.cpp

@@ -16,4 +16,8 @@ layout(std140) uniform ScreenEffect {
     float uSSRPixelStride;
     float uSSRMaxSteps;
     float uSharpenAmount;
+    vec4 uVideoColor;
+    vec4 uVideoParams;
+    vec4 uVideoOther;
+    vec4 uDialogueFade;
 };

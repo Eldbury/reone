@@ -20,6 +20,9 @@
 
 #include "reone/graphics/camera/perspective.h"
 #include "reone/resource/cameraanimation.h"
+#include "reone/resource/di/services.h"
+#include "reone/resource/provider/2das.h"
+#include <cmath>
 #include "reone/scene/di/services.h"
 #include "reone/scene/graphs.h"
 #include "reone/scene/node/camera.h"
@@ -50,6 +53,8 @@ uint64_t Game::acquireDialogueCamera(Conversation &conversation) {
     session.generation = ++_conversationGeneration;
     session.runtimeSession = _runtimeSessionGeneration;
     session.area = _module ? _module->area() : nullptr;
+    session.previousVideoEffect = _videoEffect;
+    session.previousVideoOverride = _videoEffectOverride;
     session.gameplayCamera = _cameraType == CameraType::FirstPerson
                                 ? CameraType::FirstPerson : CameraType::ThirdPerson;
     _dialogueCameraSession = std::move(session);
@@ -108,6 +113,7 @@ void Game::selectDialogueCamera(Conversation &conversation, uint64_t generation,
     auto staticId = node.staticCameraId();
     auto staticCamera = staticId ? area->findStaticCamera(*staticId) : nullptr;
     session.held = false;
+    session.microphoneRange = 0;
     if (allowAnimation && decoded.inSelectionRange && animated && animated->hasModel()) {
         session.selectedCamera = CameraType::Animated;
         animated->setActive(true);
@@ -116,6 +122,7 @@ void Game::selectDialogueCamera(Conversation &conversation, uint64_t generation,
     } else if (staticCamera) {
         session.selectedCamera = CameraType::Static;
         session.staticCameraId = *staticId;
+        if (std::isfinite(staticCamera->micRange())) session.microphoneRange = staticCamera->micRange();
         auto projection = std::static_pointer_cast<graphics::PerspectiveCamera>(staticCamera->cameraSceneNode()->camera());
         session.viewAngle = glm::degrees(projection->fovy());
     } else {
@@ -137,6 +144,12 @@ void Game::selectDialogueCamera(Conversation &conversation, uint64_t generation,
     }
     if (animated && session.selectedCamera != CameraType::Animated) animated->setActive(false);
     session.hasShot = true;
+    // Animated selection bypasses the ordinary/static effect dispatcher.
+    // Resolve resources last: provider callbacks can replace this session.
+    if (session.selectedCamera != CameraType::Animated) {
+        selectDialogueVideoEffect(conversation, generation, node.camVidEffect,
+            &conversation == _computer.get() && session.selectedCamera == CameraType::Static);
+    }
 }
 
 CameraType Game::dialogueCameraSelection(const Conversation &conversation, uint64_t generation, int &cameraId) const {
@@ -190,6 +203,8 @@ void Game::releaseDialogueCamera(Conversation &conversation, uint64_t generation
         session.runtimeSession != _runtimeSessionGeneration) {
         return;
     }
+    _videoEffect = session.previousVideoEffect;
+    _videoEffectOverride = session.previousVideoOverride;
     // Preserve a supported gameplay policy selected by a script (for example a
     // minigame handoff). Retirement retains only this value, never a destination
     // pointer or a publication into the departing scene.
@@ -210,6 +225,43 @@ void Game::releaseDialogueCamera(Conversation &conversation, uint64_t generation
         _services.scene.graphs.get(kSceneMain).setActiveCamera(camera->cameraSceneNode().get());
         updateCameraListener(*camera);
     }
+}
+
+void Game::enableVideoEffect(int row) {
+    const auto runtime = _runtimeSessionGeneration;
+    const auto generation = _conversationGeneration;
+    resource::VideoEffect effect;
+    if (auto table = _services.resource.twoDas.get("videoeffects")) {
+        effect = resource::readVideoEffect(*table, row, isTSL());
+    }
+    if (runtime != _runtimeSessionGeneration || generation != _conversationGeneration) return;
+    _videoEffect = effect;
+    _videoEffectOverride = true;
+}
+
+void Game::disableVideoEffect() {
+    _videoEffect = {};
+    _videoEffectOverride = false;
+}
+
+void Game::selectDialogueVideoEffect(Conversation &conversation, uint64_t generation, int row, bool computerCamera) {
+    if (!isDialogueCameraCurrent(conversation, generation)) return;
+    if (row == -1) row = computerCamera ? 0 : -2;
+    if (row < 0) {
+        if (computerCamera || !_videoEffectOverride) _videoEffect = {};
+        return;
+    }
+    resource::VideoEffect effect;
+    if (auto table = _services.resource.twoDas.get("videoeffects")) {
+        effect = resource::readVideoEffect(*table, row, isTSL());
+    }
+    if (isDialogueCameraCurrent(conversation, generation)) _videoEffect = effect;
+}
+
+void Game::endDialogueCameraNode(Conversation &conversation, uint64_t generation) {
+    if (!isDialogueCameraCurrent(conversation, generation)) return;
+    _dialogueCameraSession->microphoneRange = 0;
+    if (&conversation == _computer.get() && !_videoEffectOverride) _videoEffect = {};
 }
 
 void Game::retireConversation(Conversation::FinishReason reason) {
