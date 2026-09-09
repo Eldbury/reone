@@ -1055,6 +1055,68 @@ TEST(ModelSceneNode, should_propagate_animation_object_to_creature_attachment) {
     EXPECT_NEAR(3.0f, eyelidPosition.z, 1e-5);
 }
 
+TEST(ModelSceneNode, ordinary_actor_attachment_and_emitter_keep_interpolated_pose_after_last_key) {
+    GraphicsOptions options;
+    MockRenderPipelineFactory pipelines;
+    TestGraphicsModule graphics;
+    graphics.init();
+    TestAudioModule audio;
+    audio.init();
+    TestResourceModule resources;
+    resources.init();
+    SceneGraph scene("actor", pipelines, options, graphics.services(), audio.services(), resources.services());
+    auto node = [](int number, const char *name, ModelNode *parent, bool animated) {
+        return std::make_shared<ModelNode>(number, name, glm::vec3(0), glm::quat(1, 0, 0, 0), animated, parent);
+    };
+    auto root = node(0, "body", nullptr, true);
+    auto hook = node(1, "headhook", root.get(), true);
+    auto emitter = node(2, "emitter", root.get(), true);
+    emitter->setEmitter(std::make_shared<ModelNode::Emitter>());
+    root->addChild(hook);
+    root->addChild(emitter);
+    auto headRoot = node(0, "head", nullptr, true);
+    auto eyelid = node(1, "eyelid", headRoot.get(), true);
+    headRoot->addChild(eyelid);
+
+    auto animRoot = node(0, "body", nullptr, false);
+    auto animEmitter = node(2, "emitter", animRoot.get(), false);
+    auto animEyelid = node(3, "eyelid", animRoot.get(), false);
+    animRoot->addChild(animEmitter);
+    animRoot->addChild(animEyelid);
+    // Ordinary actor motion and its emitter use control polygon (2,6,8,4).
+    // The head uses a linear track; all finish before the five-second clip.
+    for (auto tracked : {animRoot, animEmitter}) {
+        auto &track = tracked->vectorTracks()[ControllerTypes::position];
+        track.addBezier(1, {2, 0, 0}, {0, 0, 0}, {4, 0, 0});
+        track.addBezier(3, {4, 0, 0}, {4, 0, 0}, {0, 0, 0});
+    }
+    animEyelid->vectorTracks()[ControllerTypes::position].add(1, {0, 1, 0});
+    animEyelid->vectorTracks()[ControllerTypes::position].add(3, {0, 3, 0});
+    auto clip = std::make_shared<Animation>("gesture", 5, 0, "", animRoot, std::vector<Animation::Event>());
+    Model bodyAsset("actor", 0, root, {clip}, "", 1);
+    Model headAsset("head", 0, headRoot, {}, "", 1);
+    auto body = scene.newModel(bodyAsset, ModelUsage::Creature);
+    auto head = scene.newModel(headAsset, ModelUsage::Creature);
+    body->attach("headhook", *head);
+    body->playAnimation("gesture", nullptr, AnimationProperties::fromFlags(AnimationFlags::fireForget | AnimationFlags::propagate));
+    auto check = [&](float dt, float bodyX, float eyelidY) {
+        body->update(dt);
+        EXPECT_FLOAT_EQ(bodyX, body->getNodeByName("body")->localTransform()[3].x);
+        auto emitterNode = body->getNodeByName("emitter");
+        ASSERT_EQ(SceneNodeType::Emitter, emitterNode->type());
+        EXPECT_FLOAT_EQ(bodyX, emitterNode->localTransform()[3].x);
+        EXPECT_FLOAT_EQ(eyelidY, head->getNodeByName("eyelid")->localTransform()[3].y);
+        ASSERT_EQ(1u, head->animationChannels().size());
+        EXPECT_EQ(clip.get(), head->animationChannels().front().anim);
+        EXPECT_FLOAT_EQ(body->animationChannels().front().time, head->animationChannels().front().time);
+    };
+    check(0, 2, 1);
+    check(2, 6, 2);
+    check(2, 4, 3);
+    check(0.5f, 4, 3);
+    EXPECT_FALSE(body->isAnimationFinished());
+}
+
 TEST(ModelSceneNode, should_keep_equipment_attachment_animation_local) {
     // given
     auto graphicsOpt = GraphicsOptions();
