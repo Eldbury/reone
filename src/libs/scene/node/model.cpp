@@ -264,9 +264,23 @@ void ModelSceneNode::playAnimation(const std::string &name, std::shared_ptr<LipA
     }
 }
 
+static float inheritedAnimationScale(const Model &model, const Animation &animation) {
+    float scale = 1.0f;
+    for (auto current = &model; current; current = current->superModel().get()) {
+        const auto found = current->animations().find(animation.name());
+        if (found != current->animations().end() && found->second.get() == &animation) {
+            return scale; // Local tracks are already in their owner's coordinates.
+        }
+        scale *= current->animationScale();
+    }
+    // External stunt/attachment tracks have no owner in this model chain.
+    // Preserve their existing scale policy; this is not clip-name resolution.
+    return model.animationScale();
+}
+
 void ModelSceneNode::playAnimation(Animation &anim, std::shared_ptr<LipAnimation> lipAnim, AnimationProperties properties) {
     if (properties.scale == 0.0f) {
-        properties.scale = _model->animationScale();
+        properties.scale = inheritedAnimationScale(*_model, anim);
     }
 
     // Camera requests can change once/loop metadata while resolving to the

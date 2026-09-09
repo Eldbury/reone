@@ -312,6 +312,55 @@ TEST(ModelSceneNode, overlay_animations_on_disjoint_nodes_run_together) {
     EXPECT_TRUE(fixture.node->isAnimationPlaying("heading000"));
 }
 
+TEST(ModelSceneNode, inherited_position_scale_stops_at_the_clip_owner_without_changing_time) {
+    OverlayModelFixture fixture({});
+    auto root = std::make_shared<ModelNode>(0, "root_node", glm::vec3(0, 0, 3),
+        glm::quat(1, 0, 0, 0), true, nullptr);
+    auto track = std::make_shared<ModelNode>(0, "root_node", glm::vec3(0),
+        glm::quat(1, 0, 0, 0), true, nullptr);
+    track->vectorTracks()[ControllerTypes::position].add(0, glm::vec3(0));
+    track->vectorTracks()[ControllerTypes::position].add(2, glm::vec3(0, 0, -4));
+    auto clip = std::make_shared<Animation>("pose", 2, 0, "", track, std::vector<Animation::Event> {});
+    auto owner = std::make_shared<Model>("owner", 0, root,
+        std::vector<std::shared_ptr<Animation>> {clip}, "", 9.0f);
+    auto middle = std::make_shared<Model>("middle", 0, root,
+        std::vector<std::shared_ptr<Animation>> {}, "owner", 0.5f);
+    middle->setSuperModel(owner);
+    Model body("body", 0, root, {}, "middle", 1.5f);
+    body.setSuperModel(middle);
+    auto node = fixture.scene->newModel(body, ModelUsage::Creature);
+
+    node->playAnimation("pose", nullptr, {});
+    node->update(0.5f);
+    // The owner contributes no scale. Half a second samples displacement -1,
+    // transformed by 1.5 then 0.5, from the live model's rest height 3.
+    EXPECT_FLOAT_EQ(0.75f, node->animationChannels().front().properties.scale);
+    EXPECT_FLOAT_EQ(0.5f, node->animationChannels().front().time);
+    EXPECT_FLOAT_EQ(2.25f, node->getNodeByName("root_node")->origin().z);
+
+    AnimationProperties explicitScale;
+    explicitScale.scale = 2;
+    node->playAnimation("pose", nullptr, explicitScale);
+    node->update(0.5f);
+    EXPECT_FLOAT_EQ(1.0f, node->getNodeByName("root_node")->origin().z);
+    EXPECT_FLOAT_EQ(0.5f, node->animationChannels().front().time);
+
+    // A foreign clip sharing the name is still external animation. Retain the
+    // existing leaf-scale policy for external stunts/attachment tracks.
+    Animation foreign("pose", 2, 0, "", track, {});
+    node->playAnimation(foreign, nullptr, {});
+    node->update(0.5f);
+    EXPECT_FLOAT_EQ(1.5f, node->animationChannels().front().properties.scale);
+    EXPECT_FLOAT_EQ(1.5f, node->getNodeByName("root_node")->origin().z);
+
+    // A local clip is already in this model's coordinate system.
+    auto local = fixture.scene->newModel(*owner, ModelUsage::Creature);
+    local->playAnimation("pose", nullptr, {});
+    local->update(0.5f);
+    EXPECT_FLOAT_EQ(1.0f, local->animationChannels().front().properties.scale);
+    EXPECT_FLOAT_EQ(2.0f, local->getNodeByName("root_node")->origin().z);
+}
+
 TEST(ModelSceneNode, removing_one_overlay_leaves_the_others_running) {
     OverlayModelFixture fixture({"contact01", "contact02", "heading000"});
     fixture.overlay("contact01");
