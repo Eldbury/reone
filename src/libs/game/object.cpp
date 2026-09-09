@@ -1159,8 +1159,11 @@ void Object::replaceEffectState(
         }
     }
     _effects.swap(replacement);
-    for (const EffectInstance &effect : _effects) {
-        if (!containsId(replacement, effect.id) && effect.effect &&
+    // A newly applied effect can replace an older effect (native disguise).
+    // Keep callback records alive and do not iterate a deque a hook can erase.
+    const auto toApply = _effects;
+    for (const EffectInstance &effect : toApply) {
+        if (containsId(_effects, effect.id) && !containsId(replacement, effect.id) && effect.effect &&
             !effect.effect->onApply(*this, effect)) {
             std::terminate();
         }

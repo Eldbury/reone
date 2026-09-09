@@ -1134,6 +1134,12 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
     }
     put(*result, Gff::Field::newWord("FactionID", static_cast<uint16_t>(creature._faction)));
     put(*result, Gff::Field::newWord("Appearance_Type", creature._appearance));
+    put(*result, Gff::Field::newByte("PM_IsDisguised", creature._disguised));
+    if (creature._disguised) {
+        put(*result, Gff::Field::newWord("PM_Appearance", creature._appearanceBeforeDisguise));
+    } else {
+        removeSaveField(*result, "PM_Appearance");
+    }
     put(*result, Gff::Field::newByte("Gender", static_cast<uint8_t>(creature._gender)));
     put(*result, Gff::Field::newShort("HitPoints", creature._hitPoints));
     put(*result, Gff::Field::newShort("MaxHitPoints", creature._maxHitPoints));

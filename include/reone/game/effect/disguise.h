@@ -28,9 +28,11 @@ public:
     DisguiseEffect(int appearance) :
         Effect(EffectType::Disguise),
         _appearance(appearance) {
+        setSaveFacingInteger(0, appearance);
     }
 
-    void applyTo(Object &object) override;
+    bool onApply(Object &object, const EffectInstance &instance) override;
+    void onRemove(Object &object, const EffectInstance &instance) override;
 
 private:
     int _appearance;

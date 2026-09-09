@@ -17,12 +17,34 @@
 
 #include "reone/game/effect/disguise.h"
 
+#include "reone/game/object/creature.h"
+
 namespace reone {
 
 namespace game {
 
-void DisguiseEffect::applyTo(Object &object) {
-    // TODO: implement
+bool DisguiseEffect::onApply(Object &object, const EffectInstance &instance) {
+    auto *creature = dyn_cast<Creature>(&object);
+    if (!creature || !creature->canDisguiseTo(_appearance)) return false;
+
+    // Retail replaces the previous native disguise. Copy IDs before removing
+    // anything: the canonical effect deque owns these records, not this value.
+    const auto currentId = instance.id;
+    std::vector<EffectId> previous;
+    for (const auto &effect : creature->effects()) {
+        if (effect.type() == EffectType::Disguise && effect.id != currentId) {
+            previous.push_back(effect.id);
+        }
+    }
+    for (auto id : previous) creature->removeEffectsById(id);
+    creature->refreshDisguisePresentation();
+    return true;
+}
+
+void DisguiseEffect::onRemove(Object &object, const EffectInstance &) {
+    if (auto *creature = dyn_cast<Creature>(&object)) {
+        creature->refreshDisguisePresentation();
+    }
 }
 
 } // namespace game

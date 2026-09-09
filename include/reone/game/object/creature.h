@@ -445,6 +445,9 @@ protected:
 
 private:
     friend class Party;
+    friend class DisguiseEffect;
+    bool canDisguiseTo(int appearance) const;
+    void refreshDisguisePresentation();
     // Temporary control transfer parks presentation, not the Area runtime or
     // object identity. Party membership/control makes the actor present again.
     bool _controlParked {false};
@@ -586,7 +589,7 @@ private:
     // portrait) for the current _appearance, without building a scene node.
     void loadAppearanceProperties();
 
-    // Recompute the disguise appearance override from equipped items: switch to a
+    // Recompute the disguise appearance override from native effects or equipped items: switch to a
     // disguise item's appearance when one is equipped, and restore the original
     // appearance when none remains. Updates _appearance only; callers rebuild the model.
     void updateDisguise();

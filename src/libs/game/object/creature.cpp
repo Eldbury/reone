@@ -1191,12 +1191,39 @@ bool Creature::equip(const std::string &resRef) {
     return equipped;
 }
 
+bool Creature::canDisguiseTo(int appearance) const {
+    if (appearance < 0) return false;
+    auto table = _services.resource.twoDas.get("appearance");
+    return table && appearance < table->getRowCount();
+}
+
+void Creature::refreshDisguisePresentation() {
+    const auto previous = _appearance;
+    updateDisguise();
+    if (_appearance != previous && _sceneNode) {
+        loadAppearanceProperties();
+        updateModel(); // replace the model in-place; retain the Area's root
+    }
+}
+
 void Creature::updateDisguise() {
     int disguiseAppearance = -1;
     for (auto &[slot, item] : _equipment) {
         if (item->hasDisguise()) {
             disguiseAppearance = item->disguiseAppearance();
             break;
+        }
+    }
+    // Native effects carry their appearance in the canonical integer payload.
+    // Prefer an active scripted disguise, falling back to equipped-item
+    // disguise when that effect is removed. No parallel effect identity/state.
+    for (auto it = _effects.rbegin(); it != _effects.rend(); ++it) {
+        if (it->type() == EffectType::Disguise && it->hasLiveRuntimeSource()) {
+            const int appearance = it->integerParameter(0, -1);
+            if (appearance >= 0) {
+                disguiseAppearance = appearance;
+                break;
+            }
         }
     }
     if (disguiseAppearance >= 0) {

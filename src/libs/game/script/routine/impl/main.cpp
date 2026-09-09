@@ -4841,7 +4841,8 @@ static Variable GetAppearanceType(const std::vector<Variable> &args, const Routi
     // Transform
 
     // Execute
-    throw RoutineNotImplementedException("GetAppearanceType");
+    auto creature = dyn_cast<Creature>(oCreature);
+    return Variable::ofInt(creature ? creature->appearance() : -1);
 }
 
 static Variable FloatingTextStrRefOnCreature(const std::vector<Variable> &args, const RoutineContext &ctx) {

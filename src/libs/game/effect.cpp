@@ -34,6 +34,7 @@
 #include "reone/game/effect/damageincrease.h"
 #include "reone/game/effect/damagereduction.h"
 #include "reone/game/effect/damageresistance.h"
+#include "reone/game/effect/disguise.h"
 #include "reone/game/effect/immunity.h"
 #include "reone/game/effect/invisibility.h"
 #include "reone/game/effect/savingthrowdecrease.h"
@@ -214,6 +215,8 @@ std::shared_ptr<Effect> executableEffect(const EffectInstance &instance) {
     case EffectType::DamageReduction:
         return std::make_shared<DamageReductionEffect>(
             integer(0), static_cast<DamagePower>(integer(1)), integer(2));
+    case EffectType::Disguise:
+        return std::make_shared<DisguiseEffect>(integer(0, -1));
     case EffectType::Invisibility:
         return std::make_shared<InvisibilityEffect>(
             static_cast<InvisibilityType>(integer(0)));
