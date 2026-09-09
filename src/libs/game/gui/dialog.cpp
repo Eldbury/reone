@@ -81,6 +81,15 @@ static const struct CutAnimationBand {
     {1400, "l", true},
     {1600, "wl", true}};
 
+static std::optional<int> dialogAnimationRow(int ordinal, bool tsl) {
+    if (ordinal >= kDialogAnimationBase) return ordinal - kDialogAnimationBase;
+    if (ordinal <= 0 || tsl) return std::nullopt;
+    for (const auto &band : g_cutAnimationBands) {
+        if (ordinal >= band.base && ordinal < band.base + kCutAnimationBandSize) return std::nullopt;
+    }
+    return ordinal; // K1 direct rows still require table/name validation.
+}
+
 static const std::unordered_map<std::string, AnimationType> g_animTypeByName {
     {"dead", AnimationType::LoopingDead},
     {"taunt", AnimationType::FireForgetTaunt},
@@ -113,6 +122,12 @@ static const std::unordered_map<std::string, AnimationType> g_animTypeByName {
     {"listen_injured", AnimationType::LoopingListenInjured},
     {"kneel_talk_angry", AnimationType::LoopingKneelTalkAngry},
     {"kneel_talk_sad", AnimationType::LoopingKneelTalkSad}};
+
+static AnimationType dialogAnimationTypeAtRow(const TwoDA &animations, int row) {
+    const auto name = boost::to_lower_copy(animations.getString(row, "name"));
+    const auto found = g_animTypeByName.find(name);
+    return found != g_animTypeByName.end() ? found->second : AnimationType::Invalid;
+}
 
 void DialogGUI::preload(IGUI &gui) {
     GameGUI::preload(gui);
@@ -486,12 +501,18 @@ void DialogGUI::updateCamera() {
     shot.oldHitCheck = resource->oldHitCheck != 0;
     if (angle == 1) {
         for (const auto &animation : _currentEntry->animations) {
-            if (animation.animation < kDialogAnimationBase || resolveCameraParticipant(animation.participant) != first) continue;
+            const auto row = dialogAnimationRow(animation.animation, _game.isTSL());
+            if (!row || resolveCameraParticipant(animation.participant) != first) continue;
             auto animations = _services.resource.twoDas.get("dialoganimations");
             if (!isCurrentConversation(generation)) return;
-            if (animations) {
+            if (animations && *row < animations->getRowCount()) {
+                // Accept a low K1 ordinal only when ordinary participant
+                // playback recognizes the row. Offset-encoded pullback keeps
+                // its existing table-data behavior even for unknown names.
+                if (animation.animation < kDialogAnimationBase &&
+                    dialogAnimationTypeAtRow(*animations, *row) == AnimationType::Invalid) continue;
                 try {
-                    shot.pullback = animations->getFloat(animation.animation - kDialogAnimationBase, "cu_pb_range");
+                    shot.pullback = animations->getFloat(*row, "cu_pb_range");
                 } catch (const std::invalid_argument &) {
                     warn("Dialog: invalid camera pullback value");
                 } catch (const std::out_of_range &) {
@@ -655,17 +676,12 @@ std::optional<DialogGUI::CutAnimation> DialogGUI::decodeCutAnimation(int ordinal
 }
 
 AnimationType DialogGUI::getDialogAnimationType(int ordinal) const {
-    int index;
-    if (ordinal >= kDialogAnimationBase) {
-        index = ordinal - kDialogAnimationBase;
-    } else if (ordinal > 0 && !_game.isTSL()) {
-        index = ordinal;
-    } else {
-        // Cut-band ordinals never reach here. K2 lower ordinals and the zero
-        // sentinel belong to no ordinary-animation namespace reone recognises.
+    const auto row = dialogAnimationRow(ordinal, _game.isTSL());
+    if (!row) {
         warn("Dialog: unsupported animation ordinal: " + std::to_string(ordinal));
         return AnimationType::Invalid;
     }
+    const int index = *row;
     std::shared_ptr<TwoDA> animations(_services.resource.twoDas.get("dialoganimations"));
 
     if (!animations || index >= animations->getRowCount()) {
@@ -677,10 +693,7 @@ AnimationType DialogGUI::getDialogAnimationType(int ordinal) const {
         return AnimationType::Invalid;
     }
 
-    std::string name(boost::to_lower_copy(animations->getString(index, "name")));
-    auto maybeAnimType = g_animTypeByName.find(name);
-
-    return maybeAnimType != g_animTypeByName.end() ? maybeAnimType->second : AnimationType::Invalid;
+    return dialogAnimationTypeAtRow(*animations, index);
 }
 
 void DialogGUI::repositionMessage() {

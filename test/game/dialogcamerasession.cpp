@@ -1769,6 +1769,43 @@ TEST_P(DialogueCameraSessionTest, explicit_listener_and_live_camera_hook_drive_t
     EXPECT_NEAR(1.66f, graph->camera()->get().origin().z, 0.00001f);
 }
 
+TEST_P(DialogueCameraSessionTest, close_pullback_uses_the_game_specific_ordinary_participant_encoding) {
+    auto speaker = framingActor("speaker", {4, 0, 0});
+    auto target = framingActor("listener", {0, 0, 0});
+    TwoDA::Builder builder;
+    builder.columns({"name", "cu_pb_range"});
+    // Row 35 (Bow) is the established K1 direct-row compatibility example.
+    // Nonsemantic rows and cut-band rows deliberately also have pullback data.
+    for (int i = 0; i <= 1799; ++i) {
+        builder.row({i == 35 || i >= 1000 ? "Bow" : "unknown", "1.25"});
+    }
+    std::shared_ptr<TwoDA> table = builder.build();
+    ON_CALL(engine.resourceModule().twoDas(), get("dialoganimations"))
+        .WillByDefault(Return(table));
+    auto resource = dialogue("close_animation_encoding", false);
+    resource->entries[0].speaker = "speaker";
+    resource->entries[0].listener = "listener";
+    resource->entries[0].cameraAngle = 1;
+    auto eye = [&](int ordinal) {
+        resource->entries[0].animations = {{"speaker", ordinal}};
+        start(resource);
+        Access::tick(*game, 0);
+        auto result = graph->camera()->get().origin();
+        EXPECT_EQ(result, listener);
+        Access::finish(*dialog);
+        return result;
+    };
+    const auto neutral = eye(0);
+    const auto offset = eye(10035);
+    EXPECT_GT(glm::distance(neutral, offset), 1.0f);
+    EXPECT_EQ(GetParam() == GameID::KotOR ? offset : neutral, eye(35));
+    for (int ordinal : {-1, 34, 1800, 65535, 1000, 1199, 1200, 1399, 1400, 1599, 1600, 1799}) {
+        SCOPED_TRACE(ordinal);
+        EXPECT_EQ(neutral, eye(ordinal));
+    }
+    expectReleased();
+}
+
 TEST_P(DialogueCameraSessionTest, next_speaker_uses_previous_speaker_when_listener_is_absent) {
     auto first = framingActor("first", {0, 0, 0});
     auto second = framingActor("second", {4, 0, 0});
