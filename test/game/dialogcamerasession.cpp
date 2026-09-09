@@ -16,6 +16,7 @@
 #include "reone/scene/node/camera.h"
 #include "reone/scene/node/dummy.h"
 #include "reone/scene/node/particle.h"
+#include "reone/scene/collision.h"
 
 using namespace reone;
 using namespace reone::game;
@@ -115,6 +116,11 @@ public:
     std::weak_ptr<scene::ModelSceneNode> cameraModel;
     std::vector<std::weak_ptr<scene::SceneNode>> allocations;
     bool failCamera {false};
+    std::function<bool(const glm::vec3 &, const glm::vec3 &, scene::Collision &)> obstruction;
+
+    bool testLineOfSight(const glm::vec3 &from, const glm::vec3 &to, scene::Collision &collision) const override {
+        return obstruction ? obstruction(from, to, collision) : SceneGraph::testLineOfSight(from, to, collision);
+    }
 
     std::shared_ptr<scene::CameraSceneNode> newCamera() override {
         if (failCamera) return nullptr;
@@ -203,6 +209,21 @@ std::shared_ptr<graphics::Model> cameraWithClips(std::initializer_list<const cha
     return result;
 }
 
+std::shared_ptr<graphics::Model> framingActorModel() {
+    auto root = std::make_shared<graphics::ModelNode>(0, "root", glm::vec3(0), glm::quat(1, 0, 0, 0), true, nullptr);
+    auto hook = std::make_shared<graphics::ModelNode>(1, "camerahook", glm::vec3(0, 0, 1.7f), glm::quat(1, 0, 0, 0), true, root.get());
+    auto talk = std::make_shared<graphics::ModelNode>(2, "talkdummy", glm::vec3(100), glm::quat(1, 0, 0, 0), true, root.get());
+    root->addChild(hook);
+    root->addChild(talk); // Must never be used for camera framing.
+    hook->vectorTracks()[graphics::ControllerTypes::position].add(0, glm::vec3(0));
+    hook->vectorTracks()[graphics::ControllerTypes::position].add(2, glm::vec3(0, 0, 2));
+    auto clip = std::make_shared<graphics::Animation>("cut001", 2, 0, "root", root, std::vector<graphics::Animation::Event> {});
+    auto result = std::make_shared<graphics::Model>("framing_actor", 0, root,
+                  std::vector<std::shared_ptr<graphics::Animation>> {clip}, "", 1);
+    result->init();
+    return result;
+}
+
 class DialogueCameraSessionTest : public TestWithParam<GameID> {
 protected:
     void SetUp() override {
@@ -281,6 +302,19 @@ protected:
         area->add(camera);
         graph->allocations.clear();
         return camera;
+    }
+
+    std::shared_ptr<Creature> framingActor(const std::string &tag, glm::vec3 position) {
+        auto actor = game->newCreature();
+        actor->setTag(tag);
+        auto asset = framingActorModel();
+        retainedTestModels.push_back(asset);
+        auto node = graph->newModel(*asset, scene::ModelUsage::Creature);
+        TestGameModule::setAreaRuntimeSceneNode(*actor, node);
+        actor->setPosition(position);
+        area->add(actor);
+        graph->allocations.clear(); // These actor nodes belong to the Area.
+        return actor;
     }
 
     float activeFov() {
@@ -1572,7 +1606,6 @@ TEST_P(DialogueCameraSessionTest, participant_wait_uses_k1_any_k2_all_and_releas
     extra->setTag("extra");
     auto extraNode = graph->newModel(*actorModel, scene::ModelUsage::Creature);
     TestGameModule::setAreaRuntimeSceneNode(*extra, extraNode);
-    graph->addRoot(extraNode);
     area->add(extra);
     auto resource = dialogue("participant_wait", true);
     resource->entries[0].delay = 0;
@@ -1605,6 +1638,121 @@ TEST_P(DialogueCameraSessionTest, absent_participant_clip_does_not_wait_for_an_u
     Access::pick(*dialog);
     EXPECT_TRUE(playerNode->isAnimationPlaying("cut001"));
     EXPECT_FALSE(Access::waiting(*dialog));
+}
+
+TEST_P(DialogueCameraSessionTest, explicit_listener_and_live_camera_hook_drive_the_published_frame) {
+    auto speaker = framingActor("speaker", {4, 0, 0});
+    auto target = framingActor("listener", {0, 0, 0});
+    player->setPosition({100, 100, 0});
+    auto resource = dialogue("framing_hooks", false);
+    resource->entries[0].speaker = "speaker";
+    resource->entries[0].listener = "listener";
+    resource->entries[0].cameraAngle = 1;
+    start(resource);
+    auto node = std::static_pointer_cast<scene::ModelSceneNode>(speaker->sceneNode());
+    node->playAnimation("cut001");
+    Access::tick(*game, 0.5f);
+    EXPECT_FLOAT_EQ(0.5f, node->animationChannels().front().time);
+    const auto eye = graph->camera()->get().origin();
+    EXPECT_NEAR(3.3669873f, eye.x, 0.00001f);
+    EXPECT_NEAR(0.25f, eye.y, 0.00001f);
+    EXPECT_NEAR(2.16f, eye.z, 0.00001f); // Live 2.2 hook, not resource TALKDUMMY at100.
+    EXPECT_EQ(eye, listener);
+    resource->oldHitCheck = 1;
+    start(resource); // OldHitCheck is authored when the controller is configured.
+    Access::tick(*game, 0);
+    EXPECT_NEAR(1.66f, graph->camera()->get().origin().z, 0.00001f);
+}
+
+TEST_P(DialogueCameraSessionTest, next_speaker_uses_previous_speaker_when_listener_is_absent) {
+    auto first = framingActor("first", {0, 0, 0});
+    auto second = framingActor("second", {4, 0, 0});
+    auto third = framingActor("third", {4, 4, 0});
+    auto resource = cameraSequence("previous_listener", 2);
+    resource->cameraModel.clear();
+    for (auto &entry : resource->entries) { entry.cameraAnimation = 0; entry.cameraAngle = 1; }
+    resource->entries[0].speaker = "second";
+    resource->entries[0].listener = "first";
+    resource->entries[1].speaker = "third";
+    start(resource);
+    Access::pick(*dialog);
+    Access::tick(*game, 0);
+    const auto eye = graph->camera()->get().origin();
+    EXPECT_NEAR(3.75f, eye.x, 0.00001f);
+    EXPECT_NEAR(3.3669873f, eye.y, 0.00001f);
+    EXPECT_NEAR(1.66f, eye.z, 0.00001f);
+}
+
+TEST_P(DialogueCameraSessionTest, authored_offsets_and_consecutive_wide_shots_preserve_controller_binding) {
+    auto first = framingActor("first", {4, 0, 0});
+    auto second = framingActor("second", {0, 0, 0});
+    auto next = framingActor("next", {50, 50, 0});
+    auto resource = cameraSequence("wide_binding", 2);
+    resource->cameraModel.clear();
+    for (auto &entry : resource->entries) { entry.cameraAnimation = 0; entry.cameraAngle = 3; }
+    resource->entries[0].speaker = "first";
+    resource->entries[0].listener = "second";
+    resource->entries[0].camHeightOffset = 0.5f;
+    resource->entries[0].tarHeightOffset = 1.25f;
+    resource->entries[1].speaker = "next";
+    resource->entries[1].camHeightOffset = 10;
+    start(resource);
+    Access::tick(*game, 0);
+    const auto original = graph->camera()->get().origin();
+    EXPECT_NEAR(3.85f, original.z, 0.00001f);
+    Access::pick(*dialog);
+    Access::tick(*game, 0);
+    EXPECT_EQ(original, graph->camera()->get().origin());
+    game->destroyRuntimeObjectGraph(second);
+    Access::tick(*game, 0.25f);
+    EXPECT_EQ(original, graph->camera()->get().origin()); // Safe hold on endpoint loss.
+    Access::finish(*dialog);
+    EXPECT_FALSE(Access::hasSession(*game));
+}
+
+TEST_P(DialogueCameraSessionTest, controller_prefers_clear_side_and_keeps_a_margin_before_obstructions) {
+    auto camera = area->getCamera<DialogCamera>(GameCameraType::Dialog);
+    DialogCamera::Shot shot;
+    shot.angle = 1;
+    shot.first.position = {4, 0, 1.7f};
+    shot.second.position = {0, 0, 1.7f};
+    graph->obstruction = [](const auto &from, const auto &to, auto &hit) {
+        hit.intersection = from + 0.5f * (to - from);
+        return to.y > 0;
+    };
+    camera->setShot(shot);
+    EXPECT_FALSE(camera->rightSide());
+    EXPECT_NEAR(-0.25f, camera->sceneNode()->origin().y, 0.00001f);
+    // A cached side does not cross the line of action when geometry changes.
+    graph->obstruction = [](const auto &from, const auto &to, auto &hit) {
+        hit.intersection = from + 0.5f * (to - from);
+        return true;
+    };
+    camera->setShot(shot, false);
+    EXPECT_NEAR(-0.075f, camera->sceneNode()->origin().y, 0.00001f);
+    graph->obstruction = {};
+}
+
+TEST_P(DialogueCameraSessionTest, automatic_angle_sequence_is_session_local_and_replacement_resets_it) {
+    auto first = framingActor("first", {4, 0, 0});
+    auto second = framingActor("second", {0, 0, 0});
+    auto resource = cameraSequence("automatic_angles", 2);
+    resource->cameraModel.clear();
+    for (auto &entry : resource->entries) {
+        entry.cameraAnimation = 0;
+        entry.cameraAngle = 0;
+        entry.speaker = "first";
+        entry.listener = "second";
+    }
+    start(resource);
+    Access::tick(*game, 0);
+    EXPECT_NEAR(-1.701023f, graph->camera()->get().origin().x, 0.00001f);
+    Access::pick(*dialog);
+    Access::tick(*game, 0);
+    EXPECT_NEAR(3.3669873f, graph->camera()->get().origin().x, 0.00001f);
+    start(resource);
+    Access::tick(*game, 0);
+    EXPECT_NEAR(-1.701023f, graph->camera()->get().origin().x, 0.00001f);
 }
 
 INSTANTIATE_TEST_SUITE_P(K1AndK2, DialogueCameraSessionTest, Values(GameID::KotOR, GameID::TSL));

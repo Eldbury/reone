@@ -69,6 +69,16 @@ private:
     Controls _controls;
 
     RuntimeObjectRef<Object> _currentSpeaker;
+    RuntimeObjectRef<Object> _currentListener;
+    RuntimeObjectRef<Creature> _dialogPlayer;
+    RuntimeObjectRef<Object> _framingFirst, _framingSecond;
+    uint32_t _framingAngle {0};
+    size_t _automaticShotIndex {0};
+    struct LineOfAction {
+        RuntimeObjectRef<Object> first, second;
+        bool rightSide;
+    };
+    std::vector<LineOfAction> _linesOfAction;
     std::map<std::string, Participant> _participantByTag;
 
     /**
@@ -100,8 +110,9 @@ private:
     bool enterMixedStunt(Participant &participant, const std::shared_ptr<graphics::Animation> &animation, bool looping);
     void leaveMixedStunt(Participant &participant);
 
-    glm::vec3 getTalkPosition(const Object &object) const;
-    DialogCamera::Variant getRandomCameraVariant() const;
+    std::shared_ptr<Object> resolveCameraParticipant(const std::string &tag) const;
+    DialogCamera::Subject cameraSubject(const Object &object) const;
+    uint32_t resolveCameraAngle(uint32_t authoredAngle);
     static std::optional<CutAnimation> decodeCutAnimation(int ordinal);
     AnimationType getDialogAnimationType(int ordinal) const;
     std::shared_ptr<Creature> resolveParticipantCreature(const std::string &participant) const;

@@ -3741,6 +3741,8 @@ void Game::updateDialogueCamera(float dt) {
     if (!_conversation || !_conversation->isCurrentConversation()) {
         return;
     }
+    auto presenter = _conversation;
+    const auto generation = presenter->conversationGeneration();
     int cameraId;
     auto type = getConversationCamera(cameraId);
     if (type == CameraType::Static) {
@@ -3756,6 +3758,12 @@ void Game::updateDialogueCamera(float dt) {
     }
     _cameraType = type;
     _conversation->refreshCameraPose();
+    if (_conversation != presenter || !presenter->isCurrentConversation(generation)) {
+        // A fallback's resource lookup may replace the conversation. No clock
+        // has advanced yet; resolve the new presentation before publishing.
+        updateDialogueCamera(dt);
+        return;
+    }
     const auto &session = *_dialogueCameraSession;
     const float animationTime = _paused ? 0.0f : dt;
     // Sequencing owns the metadata clock. Advance beside the private model,

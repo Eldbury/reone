@@ -29,10 +29,10 @@
 #include "reone/resource/provider/2das.h"
 #include "reone/resource/provider/audioclips.h"
 #include "reone/resource/provider/models.h"
+#include "reone/scene/node/modelnode.h"
 #include "reone/scene/types.h"
 #include "reone/script/virtualmachine.h"
 #include "reone/system/logutil.h"
-#include "reone/system/randomutil.h"
 
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
@@ -209,6 +209,13 @@ DialogGUI::~DialogGUI() {
 }
 
 void DialogGUI::onStart() {
+    _dialogPlayer = _game.party().player();
+    _currentListener.reset();
+    _framingFirst.reset();
+    _framingSecond.reset();
+    _framingAngle = 0;
+    _automaticShotIndex = 0;
+    _linesOfAction.clear();
     _currentSpeaker = owner();
     _heldCutParticipants.clear();
     loadStuntParticipants();
@@ -256,13 +263,13 @@ bool DialogGUI::hasStuntPresentation() const {
 }
 
 std::shared_ptr<Creature> DialogGUI::resolveParticipantCreature(const std::string &participant) const {
-    if (participant == kObjectTagOwner) {
+    if (boost::iequals(participant, kObjectTagOwner)) {
         return std::dynamic_pointer_cast<Creature>(owner());
     }
     if (boost::iequals(participant, kObjectTagPlayer)) {
-        return _game.party().player();
+        return _dialogPlayer.resolve();
     }
-    return std::dynamic_pointer_cast<Creature>(_game.module()->area()->getObjectByTag(participant));
+    return std::dynamic_pointer_cast<Creature>(resolveCameraParticipant(participant));
 }
 
 std::shared_ptr<Animation> DialogGUI::getStuntParticipantAnimation(
@@ -363,89 +370,147 @@ void DialogGUI::leaveMixedStunt(Participant &participant) {
     participant.mixedStuntActive = false;
 }
 
+std::shared_ptr<Object> DialogGUI::resolveCameraParticipant(const std::string &tag) const {
+    if (boost::iequals(tag, kObjectTagOwner)) return owner();
+    if (boost::iequals(tag, kObjectTagPlayer)) return _dialogPlayer.resolve();
+    auto module = _game.module();
+    auto area = module ? module->area() : nullptr;
+    return area && !tag.empty() ? area->getObjectByTag(tag) : nullptr;
+}
+
 void DialogGUI::loadCurrentSpeaker() {
-    std::shared_ptr<Area> area(_game.module()->area());
-    std::shared_ptr<Object> speaker;
-
-    if (!_currentEntry->speaker.empty()) {
-        speaker = area->getObjectByTag(_currentEntry->speaker);
+    auto previous = _currentSpeaker.resolve();
+    auto speaker = resolveCameraParticipant(_currentEntry->speaker);
+    if (!speaker) speaker = isReplyPresentation() ? _dialogPlayer.resolve() : owner();
+    auto listener = resolveCameraParticipant(_currentEntry->listener);
+    if (!listener) listener = previous && previous != speaker ? previous : _dialogPlayer.resolve();
+    if (listener == speaker) {
+        auto previousListener = _currentListener.resolve();
+        listener = previousListener && previousListener != speaker ? previousListener : owner();
     }
-    if (!speaker) {
-        speaker = owner();
-    }
-
-    // Make previous speaker stop talking, if any
-    auto previousSpeaker = _currentSpeaker.resolve();
-    if (previousSpeaker && previousSpeaker != speaker) {
-        auto speakerCreature =
-            std::dynamic_pointer_cast<Creature>(previousSpeaker);
-        if (speakerCreature) {
-            speakerCreature->stopTalking();
-        }
+    if (previous && previous != speaker) {
+        if (auto creature = std::dynamic_pointer_cast<Creature>(previous)) creature->stopTalking();
     }
     _currentSpeaker = speaker;
+    _currentListener = listener;
+    // Participant orientation/talking still belongs to the GUI. The camera
+    // controller never moves actors or dispatches scripts.
+    if (speaker && listener && speaker != listener) {
+        if (auto creature = std::dynamic_pointer_cast<Creature>(listener)) creature->face(*speaker);
+        if (auto creature = std::dynamic_pointer_cast<Creature>(speaker)) creature->face(*listener);
+    }
+    if (auto creature = std::dynamic_pointer_cast<Creature>(speaker)) creature->startTalking(_lipAnimation);
+}
 
-    // Make current speaker face the player, and vice versa
-    if (speaker) {
-        std::shared_ptr<Creature> player(_game.party().player());
-        player->face(*speaker);
+uint32_t DialogGUI::resolveCameraAngle(uint32_t authoredAngle) {
+    if (authoredAngle >= 1 && authoredAngle <= 3) return authoredAngle;
+    // Binary shot sequence, with a stable session-local starting point. Exact
+    // vanilla seed/random-side choice is unverified and intentionally omitted.
+    static constexpr uint32_t sequence[] {1, 3, 1, 3, 2, 2, 1, 3, 1, 2, 1, 2, 1, 3, 2, 3, 1, 1, 1};
+    const size_t index = _automaticShotIndex++;
+    return index == 0 ? 2 : sequence[(index - 1) % std::size(sequence)];
+}
 
-        auto speakerCreature = std::dynamic_pointer_cast<Creature>(speaker);
-        if (speakerCreature) {
-            speakerCreature->startTalking(_lipAnimation);
-            speakerCreature->face(*player);
+DialogCamera::Subject DialogGUI::cameraSubject(const Object &object) const {
+    DialogCamera::Subject result;
+    result.position = object.position();
+    auto model = std::dynamic_pointer_cast<ModelSceneNode>(object.sceneNode());
+    if (!model) return result;
+    result.position = model->origin(); // Stunt presentation may differ from logical placement.
+    auto hook = model->getNodeByName("camerahook");
+    auto resourceHook = model->model().getNodeByNameRecursive("camerahook");
+    // Most humanoids place the camera hook on an attached head. Keep the
+    // attachment borrowed only for this sample, after model animation.
+    auto head = model->getAttachment("headhook");
+    if (!hook && head && head->type() == SceneNodeType::Model) {
+        auto headModel = static_cast<ModelSceneNode *>(head);
+        hook = headModel->getNodeByName("camerahook");
+        resourceHook = headModel->model().getNodeByNameRecursive("camerahook");
+        if (auto headHook = model->model().getNodeByNameRecursive("headhook")) {
+            result.hookHeight = headHook->absoluteTransform()[3].z;
         }
     }
+    if (resourceHook) result.hookHeight += resourceHook->absoluteTransform()[3].z;
+    if (!std::isfinite(result.hookHeight)) result.hookHeight = 0;
+    if (!_dialog->oldHitCheck) {
+        if (hook) {
+            result.position = hook->origin();
+        } else {
+            result.position.z += result.hookHeight + 0.1f;
+        }
+    }
+    return result;
 }
 
 void DialogGUI::updateCamera() {
-    if (!isCurrentConversation() || !_game.module() || !_currentEntry) {
-        return;
-    }
-    std::shared_ptr<Area> area(_game.module()->area());
-    if (!area) {
-        return;
-    }
-
+    const auto generation = conversationGeneration();
+    if (!isCurrentConversation(generation) || !_game.module() || !cameraNode()) return;
+    auto resource = _dialog; // Keep the authored node alive across provider calls.
+    const auto &node = *cameraNode();
     int cameraId;
-    if (getCamera(cameraId) == CameraType::Dialog && !isCameraHeld()) {
-        std::shared_ptr<Creature> player(_game.party().player());
-        glm::vec3 listenerPosition(player ? getTalkPosition(*player) : glm::vec3(0.0f));
-        auto speaker = _currentSpeaker.resolve();
-        glm::vec3 speakerPosition(
-            speaker ? getTalkPosition(*speaker) : glm::vec3(0.0f));
-        auto camera = area->getCamera<DialogCamera>(CameraType::Dialog);
-        if (!camera) return;
-        camera->setListenerPosition(listenerPosition);
-        camera->setSpeakerPosition(speakerPosition);
-        camera->setVariant(getRandomCameraVariant());
+    if (getCamera(cameraId) != CameraType::Dialog || isCameraHeld()) {
+        _framingAngle = 0;
+        return;
     }
-}
+    const auto angle = resolveCameraAngle(node.cameraAngle);
+    // Vanilla leaves a consecutive wide-shot controller bound to its prior
+    // subjects and offsets. Its live actor hooks still advance each frame.
+    if (angle == 3 && _framingAngle == 3 && _framingFirst.resolve() && _framingSecond.resolve()) return;
 
-glm::vec3 DialogGUI::getTalkPosition(const Object &object) const {
-    auto node = object.sceneNode();
-    if (!node || node->type() != SceneNodeType::Model) {
-        return object.position();
+    auto first = _currentSpeaker.resolve();
+    auto second = _currentListener.resolve();
+    if (cameraNode() != _currentEntry) {
+        first = _dialogPlayer.resolve();
+        second = _currentSpeaker.resolve();
+        if (auto listener = resolveCameraParticipant(node.listener)) second = listener;
     }
+    if (!first) first = owner();
+    if (!second || first == second) second = _dialogPlayer.resolve();
+    if (!first && !second) return; // Keep the last finite pose on complete participant loss.
+    if (!first) first = second;
+    if (!second) second = first;
 
-    auto model = std::static_pointer_cast<ModelSceneNode>(node);
-    std::shared_ptr<ModelNode> talkDummy(model->model().getNodeByNameRecursive("talkdummy"));
-    if (!talkDummy)
-        return model->getWorldCenterOfAABB();
-
-    return (model->absoluteTransform() * talkDummy->absoluteTransform())[3];
-}
-
-DialogCamera::Variant DialogGUI::getRandomCameraVariant() const {
-    int r = randomInt(0, 2);
-    switch (r) {
-    case 0:
-        return _entryEnded ? DialogCamera::Variant::ListenerClose : DialogCamera::Variant::SpeakerClose;
-    case 1:
-        return _entryEnded ? DialogCamera::Variant::ListenerFar : DialogCamera::Variant::SpeakerFar;
-    default:
-        return DialogCamera::Variant::Both;
+    DialogCamera::Shot shot;
+    shot.angle = angle;
+    shot.first = cameraSubject(*first);
+    shot.second = cameraSubject(*second);
+    shot.cameraRaise = node.camHeightOffset;
+    shot.targetRaise = node.tarHeightOffset;
+    shot.oldHitCheck = resource->oldHitCheck != 0;
+    if (angle == 1) {
+        for (const auto &animation : _currentEntry->animations) {
+            if (animation.animation < kDialogAnimationBase || resolveCameraParticipant(animation.participant) != first) continue;
+            auto animations = _services.resource.twoDas.get("dialoganimations");
+            if (!isCurrentConversation(generation)) return;
+            if (animations) {
+                try {
+                    shot.pullback = animations->getFloat(animation.animation - kDialogAnimationBase, "cu_pb_range");
+                } catch (const std::invalid_argument &) {
+                    warn("Dialog: invalid camera pullback value");
+                } catch (const std::out_of_range &) {
+                    warn("Dialog: camera pullback value out of range");
+                }
+            }
+            break;
+        }
     }
+    if (!isCurrentConversation(generation)) return;
+    auto area = _game.module()->area();
+    auto camera = area ? area->getCamera<DialogCamera>(CameraType::Dialog) : nullptr;
+    if (!camera) return;
+    std::optional<bool> side;
+    for (auto &line : _linesOfAction) {
+        if (line.first.resolve() == first && line.second.resolve() == second) side = line.rightSide;
+        else if (line.first.resolve() == second && line.second.resolve() == first) side = !line.rightSide;
+    }
+    camera->setShot(shot, side);
+    if (!side) {
+        if (_linesOfAction.size() == 4) _linesOfAction.erase(_linesOfAction.begin());
+        _linesOfAction.push_back({first, second, camera->rightSide()});
+    }
+    _framingFirst = first;
+    _framingSecond = second;
+    _framingAngle = angle;
 }
 
 void DialogGUI::updateParticipantAnimations() {
@@ -624,6 +689,12 @@ void DialogGUI::repositionMessage() {
 }
 
 void DialogGUI::onFinish() {
+    _currentListener.reset();
+    _dialogPlayer.reset();
+    _framingFirst.reset();
+    _framingSecond.reset();
+    _framingAngle = 0;
+    _linesOfAction.clear();
     _waitingParticipants.clear();
     if (hasStuntPresentation()) {
         releaseStuntParticipants();
@@ -737,18 +808,19 @@ void DialogGUI::setReplyLines(std::vector<std::string> lines) {
 }
 
 void DialogGUI::refreshCameraPose() {
-    if (!isCurrentConversation()) {
-        return;
-    }
-
-    // Dialog camera follows the current speaker, if any
-    auto speaker = _currentSpeaker.resolve();
-    if (speaker && _game.cameraType() == CameraType::Dialog && !isCameraHeld()) {
-        auto camera = _game.module()->area()->getCamera<DialogCamera>(CameraType::Dialog);
-        if (camera) camera->setSpeakerPosition(getTalkPosition(*speaker));
-    }
+    if (!isCurrentConversation() || _game.cameraType() != CameraType::Dialog || isCameraHeld()) return;
+    if (_framingAngle == 0) updateCamera(); // A removed static feed just fell back.
+    if (!isCurrentConversation()) return;
+    auto first = _framingFirst.resolve();
+    auto second = _framingSecond.resolve();
+    // Runtime refs cannot bind to an actor that reused a retired object's ID.
+    // A missing endpoint holds the finite last shot until the next node binds.
+    if (!first || !second) return;
+    auto module = _game.module();
+    auto area = module ? module->area() : nullptr;
+    auto camera = area ? area->getCamera<DialogCamera>(CameraType::Dialog) : nullptr;
+    if (camera) camera->updateSubjects(cameraSubject(*first), cameraSubject(*second));
 }
 
 } // namespace game
-
 } // namespace reone

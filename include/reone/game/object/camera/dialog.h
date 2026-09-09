@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include "../../camerastyle.h"
 
 #include "../camera.h"
@@ -27,13 +29,27 @@ namespace game {
 
 class DialogCamera : public Camera {
 public:
-    enum class Variant {
-        Both,
-        SpeakerClose,
-        SpeakerFar,
-        ListenerClose,
-        ListenerFar
+    // Resolved geometry inputs, separate from raw DLG fields and actor ownership.
+    // oldHitCheck positions are object origins; otherwise they are live hooks.
+    struct Subject {
+        glm::vec3 position {0.0f};
+        float hookHeight {0.0f};
     };
+    struct Shot {
+        uint32_t angle {2};
+        Subject first, second;
+        float cameraRaise {0.0f};
+        float targetRaise {0.0f};
+        float pullback {0.0f};
+        bool oldHitCheck {false};
+    };
+    struct Frame {
+        glm::vec3 eye;
+        glm::vec3 target;
+    };
+
+    // Pure geometry; no Game, scene or camera construction is needed to use it.
+    static std::optional<Frame> calculateFrame(Shot shot, bool rightSide, bool obstructed = false);
 
     DialogCamera(
         uint32_t id,
@@ -51,18 +67,18 @@ public:
 
     void load();
 
-    void setSpeakerPosition(glm::vec3 position);
-    void setListenerPosition(glm::vec3 position);
-    void setVariant(Variant variant);
+    void setShot(Shot shot, std::optional<bool> rightSide = std::nullopt);
+    void updateSubjects(Subject first, Subject second);
+    bool rightSide() const { return _rightSide; }
     void setFieldOfView(float fovy);
 
 private:
     CameraStyle _style;
+    Shot _shot;
+    bool _rightSide {true};
 
-    glm::vec3 _speakerPosition {0.0f};
-    glm::vec3 _listenerPosition {0.0f};
-    Variant _variant {Variant::Both};
-
+    bool chooseRightSide() const;
+    bool isObstructed(const Frame &frame) const;
     void updateSceneNode();
     float projectionFovy() const override;
 };
