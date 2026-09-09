@@ -1083,7 +1083,7 @@ void Object::setVisible(bool visible) {
     _visible = visible;
 
     if (_sceneNode) {
-        _sceneNode->setEnabled(visible);
+        _sceneNode->setEnabled(this->visible());
     }
 }
 

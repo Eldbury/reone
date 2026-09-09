@@ -142,6 +142,8 @@ public:
     void stopTalking();
 
     bool isSelectable() const override;
+    bool visible() const override { return Object::visible() && !_controlParked; }
+    bool isControlParked() const { return _controlParked; }
     bool isMovementRestricted() const { return _movementRestricted || !canExecuteActions(); }
     bool isLevelUpPending() const;
 
@@ -442,6 +444,12 @@ protected:
     bool canExecuteActions() const override;
 
 private:
+    friend class Party;
+    // Temporary control transfer parks presentation, not the Area runtime or
+    // object identity. Party membership/control makes the actor present again.
+    bool _controlParked {false};
+    void setControlParked(bool parked);
+
     friend class ModuleSnapshotBuilder;
     friend class TestGameModule;
     // Serializable

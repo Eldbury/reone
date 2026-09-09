@@ -633,6 +633,7 @@ void Creature::loadAppearance() {
         _sceneNode = std::move(modelSceneNode);
         _sceneNode->setUser(*this);
         _sceneNode->setLocalTransform(_transform);
+        _sceneNode->setEnabled(visible());
     }
 
     _animDirty = true;
@@ -808,7 +809,13 @@ bool Creature::canExecuteActions() const {
     return !hasEffect(EffectType::Stunned);
 }
 
+void Creature::setControlParked(bool parked) {
+    _controlParked = parked;
+    if (_sceneNode) _sceneNode->setEnabled(visible());
+}
+
 bool Creature::isSelectable() const {
+    if (_controlParked) return false;
     bool hasDropableItems = false;
     for (auto &item : _items) {
         if (item->isDropable()) {

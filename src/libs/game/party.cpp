@@ -413,6 +413,7 @@ bool Party::addMember(int npc, std::shared_ptr<Creature> creature) {
     }
     // A creature joining the party derives its XP from the shared party pool.
     creature->setXP(_xp);
+    creature->setControlParked(false);
 
     Member member;
     member.npc = npc;
@@ -768,6 +769,8 @@ void Party::setControlledMember(int npc, const std::shared_ptr<Creature> &creatu
     member.creature = creature;
     _members.insert(_members.begin(), std::move(member));
 
+    if (_player && _player != creature) _player->setControlParked(true);
+    creature->setControlParked(false);
     _player = creature;
     _persistedState.controlledNpc = npc;
 }

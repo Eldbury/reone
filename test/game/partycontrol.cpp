@@ -21,6 +21,9 @@
 #include "reone/game/types.h"
 #include "reone/resource/types.h"
 #include "reone/scene/collision.h"
+#include "reone/graphics/modelnode.h"
+#include "reone/scene/node/camera.h"
+#include "reone/scene/node/model.h"
 #include "reone/script/executioncontext.h"
 #include "reone/script/variable.h"
 
@@ -141,6 +144,11 @@ public:
         _engine.init();
         ON_CALL(_engine.sceneModule().graphs(), get(_))
             .WillByDefault(ReturnRef(_sceneGraph));
+        ON_CALL(_sceneGraph, newCamera()).WillByDefault(Invoke([this]() {
+            return std::make_shared<scene::CameraSceneNode>(
+                _sceneGraph, _engine.services().graphics,
+                _engine.services().audio, _engine.services().resource);
+        }));
         ON_CALL(_sceneGraph, testElevation(_, _))
             .WillByDefault(Invoke([this](
                                       const glm::vec3 &position,
@@ -170,6 +178,7 @@ public:
         _area = _game->newArea();
         TestGameModule::configureModuleSnapshot(
             *_game, _area, _player, "control_module", "control_area");
+        _area->initCameras(glm::vec3(2.0f, 3.0f, 0.0f), 0.25f);
 
         _companion = _game->newCreature();
         _game->party().addAvailableMember(0, _companion);
@@ -188,6 +197,22 @@ public:
     Game &game() { return *_game; }
     Area &area() { return *_area; }
     Room &room() { return _room; }
+    void enableWalking(const std::shared_ptr<Creature> &creature) {
+        auto table = std::shared_ptr<TwoDA>(TwoDA::Builder()
+            .columns({"modeltype", "walkdist"}).row({"S", "1"}).build());
+        ON_CALL(_engine.resourceModule().twoDas(), get("appearance"))
+            .WillByDefault(Return(table));
+        creature->loadAppearance();
+    }
+    std::shared_ptr<scene::ModelSceneNode> attachModel(const std::shared_ptr<Creature> &creature) {
+        auto root = std::make_shared<graphics::ModelNode>(0, "root", glm::vec3(0.0f), glm::quat(1, 0, 0, 0), true, nullptr);
+        auto model = std::make_shared<graphics::Model>("actor", 0, root, std::vector<std::shared_ptr<graphics::Animation>> {}, "", 1.0f);
+        _models.push_back(model);
+        auto node = std::make_shared<scene::ModelSceneNode>(*model, scene::ModelUsage::Creature, _sceneGraph,
+            _engine.services().graphics, _engine.services().audio, _engine.services().resource);
+        TestGameModule::setAreaRuntimeSceneNode(*creature, node);
+        return node;
+    }
     const std::shared_ptr<Creature> &player() const { return _player; }
     const std::shared_ptr<Creature> &companion() const { return _companion; }
 
@@ -195,6 +220,7 @@ private:
     TestEngine _engine;
     NiceMock<scene::MockSceneGraph> _sceneGraph;
     Room _room;
+    std::vector<std::shared_ptr<graphics::Model>> _models;
     StubConsole _console;
     std::unique_ptr<Game> _game;
     std::unique_ptr<Routines> _routines;
@@ -376,3 +402,63 @@ TEST_P(PartyControl, sameAreaControlSwitchDoesNotDetachOrDuplicateResidents) {
 
 INSTANTIATE_TEST_SUITE_P(Games, PartyControl,
                          testing::Values(GameID::KotOR, GameID::TSL));
+
+TEST_P(PartyControl, parkedControlPresentationSurvivesRoomVisibilityAndRestoresOnReturn) {
+    AreaControlHarness harness(GetParam());
+    auto player = harness.player();
+    auto companion = harness.companion();
+    auto playerNode = harness.attachModel(player);
+    auto companionNode = harness.attachModel(companion);
+    const auto generation = TestGameModule::savedGraphGeneration(harness.game());
+    const auto outgoingPosition = player->position();
+
+    ASSERT_EQ(1, harness.switchTo(0));
+    EXPECT_EQ(player, harness.game().getObjectById<Creature>(player->id()));
+    EXPECT_EQ(generation, TestGameModule::savedGraphGeneration(harness.game()));
+    EXPECT_EQ(outgoingPosition, player->position());
+    EXPECT_TRUE(player->isControlParked());
+    EXPECT_FALSE(player->visible());
+    EXPECT_FALSE(player->isSelectable());
+    EXPECT_FALSE(playerNode->isEnabled());
+    EXPECT_TRUE(companionNode->isEnabled());
+
+    // Room culling is independent from control parking. It must not reveal
+    // the outgoing PC, or force a returning actor into a hidden room.
+    harness.room().setVisible(true);
+    EXPECT_FALSE(playerNode->isEnabled());
+    harness.room().setVisible(false);
+    ASSERT_EQ(1, harness.switchTo(kNpcPlayer));
+    EXPECT_FALSE(player->isControlParked());
+    EXPECT_TRUE(companion->isControlParked());
+    EXPECT_FALSE(playerNode->isEnabled());
+    EXPECT_FALSE(companionNode->isEnabled());
+    harness.room().setVisible(true);
+    EXPECT_TRUE(playerNode->isEnabled());
+    EXPECT_FALSE(companionNode->isEnabled());
+
+    // A parked NPC can also return as an ordinary companion.
+    ASSERT_TRUE(harness.game().party().addMember(0, companion));
+    EXPECT_FALSE(companion->isControlParked());
+    EXPECT_TRUE(companionNode->isEnabled());
+    EXPECT_EQ(&harness.room(), companion->room());
+}
+
+TEST_P(PartyControl, parkedActorDoesNotBlockTheControlledCreaturesMovement) {
+    AreaControlHarness harness(GetParam());
+    auto player = harness.player();
+    auto companion = harness.companion();
+    harness.enableWalking(companion);
+    ASSERT_GT(companion->walkSpeed(), 0.0f);
+    player->setPosition({2, 3, 0});
+    ASSERT_FALSE(player->isDead());
+    companion->setPosition({2, 0, 0});
+    harness.area().moveCreature(companion, {0, 1}, false, 10.0f, 5.0f);
+    EXPECT_GT(companion->position().y, 0.0f);
+    EXPECT_LT(companion->position().y, 3.0f);
+    ASSERT_EQ(1, harness.switchTo(0));
+    companion->setPosition({2, 0, 0});
+    ASSERT_TRUE(harness.area().moveCreature(companion, {0, 1}, false, 10.0f, 5.0f));
+    EXPECT_NEAR(5.0f, companion->position().y, 1e-4f);
+    EXPECT_EQ(glm::vec3(2, 3, 0), player->position());
+    EXPECT_TRUE(player->isRuntimeLive());
+}

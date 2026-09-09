@@ -1281,7 +1281,7 @@ bool Area::findCreatureCollision(
 
     for (const auto &object : _objectsByType.at(ObjectType::Creature)) {
         const auto &other = static_cast<const Creature &>(*object);
-        if (&other == &creature || &other == ignoredCreature || other.isDead()) {
+        if (&other == &creature || &other == ignoredCreature || other.isDead() || other.isControlParked()) {
             continue;
         }
 

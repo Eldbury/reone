@@ -115,7 +115,7 @@ public:
     Room *room() const { return _room; }
     const glm::vec3 &position() const { return _position; }
     const glm::mat4 &transform() const { return _transform; }
-    bool visible() const { return _visible; }
+    virtual bool visible() const { return _visible; }
     std::shared_ptr<scene::SceneNode> sceneNode() const { return _sceneNode; }
 
     void setTag(std::string tag) { _tag = std::move(tag); }
