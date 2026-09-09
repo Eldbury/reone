@@ -713,6 +713,8 @@ void Conversation::endCurrentEntry() {
     if (!_autoPickFirstReply && !_replies.empty() && _dialog->conversationType != ConversationType::Computer) {
         _cameraNode = _replies.front();
         presentCamera(generation, *_cameraNode, false);
+        // Effect resource lookup can replace or terminate this conversation.
+        if (!isCurrentConversation(generation)) return;
     }
     onEntryEnded();
     if (!isCurrentConversation(generation)) {

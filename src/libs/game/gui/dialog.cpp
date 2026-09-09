@@ -297,6 +297,7 @@ void DialogGUI::onLoadEntry() {
         return;
     }
     updateCamera();
+    if (!isCurrentConversation(generation)) return;
     repositionMessage();
 
     _controls.LB_REPLIES->setVisible(false);
@@ -771,9 +772,11 @@ void DialogGUI::releaseStuntParticipants() {
 }
 
 void DialogGUI::onEntryEnded() {
+    const auto generation = conversationGeneration();
     _controls.LB_REPLIES->setVisible(true);
 
     if (cameraNode() != _currentEntry) updateCamera();
+    if (!isCurrentConversation(generation)) return;
     repositionMessage();
 }
 
@@ -818,10 +821,11 @@ void DialogGUI::setReplyLines(std::vector<std::string> lines) {
 }
 
 void DialogGUI::refreshCameraPose() {
-    if (!isCurrentConversation() || _game.cameraType() != CameraType::Dialog) return;
+    const auto generation = conversationGeneration();
+    if (!isCurrentConversation(generation) || _game.cameraType() != CameraType::Dialog) return;
     if (isCameraHeld() && _framingAngle == 0) return;
     if (_framingAngle == 0) updateCamera(); // A removed static feed just fell back.
-    if (!isCurrentConversation()) return;
+    if (!isCurrentConversation(generation)) return;
     auto first = _framingFirst.resolve();
     auto second = _framingSecond.resolve();
     // Runtime refs cannot bind to an actor that reused a retired object's ID.

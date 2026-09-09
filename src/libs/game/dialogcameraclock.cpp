@@ -19,6 +19,10 @@ void DialogCameraClock::request(const resource::DecodedCameraAnimation &decoded,
 
     if (_clip.animation != clip.animation || !isRunning()) {
         _elapsed = 0;
+    } else if (_looping && !decoded.looping) {
+        // The running channel retains its wrapped phase when loop properties
+        // change. Completed cycles are not elapsed time in the new one-shot.
+        _elapsed = std::fmod(_elapsed, _clip.duration());
     }
     _clip = clip;
     _looping = decoded.looping;

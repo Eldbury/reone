@@ -53,7 +53,12 @@ public:
     }
     static void pick(Conversation &conversation) { conversation.pickReply(0); }
     static void endEntry(Conversation &conversation) { conversation.endCurrentEntry(); }
+    static void dialogEntryEnded(DialogGUI &dialog) { dialog.DialogGUI::onEntryEnded(); }
+    static bool current(Conversation &conversation) { return conversation.isCurrentConversation(); }
     static bool entryEnded(Conversation &conversation) { return conversation._entryEnded; }
+    static const Dialog::EntryReply *reply(Conversation &conversation) { return conversation._replies.at(0); }
+    static bool repliesVisible(DialogGUI &dialog) { return dialog._controls.LB_REPLIES->isVisible(); }
+    static Control::TextAlign messageAlignment(DialogGUI &dialog) { return dialog._controls.LBL_MESSAGE->text().align; }
     static glm::vec4 fade(Conversation &conversation) { return conversation._fade.color(); }
     static const VideoEffect &effect(Game &game) { return game._videoEffect; }
     static bool effectOverride(Game &game) { return game._videoEffectOverride; }
@@ -104,7 +109,12 @@ public:
 class SessionDialogGUI : public DialogGUI {
 public:
     using DialogGUI::DialogGUI;
+    int entryEndedCalls {0};
 protected:
+    void onEntryEnded() override {
+        ++entryEndedCalls;
+        Access::dialogEntryEnded(*this);
+    }
     void onGUILoaded() override {}
     void setMessage(std::string) override {}
     void setReplyLines(std::vector<std::string>) override {}
@@ -316,6 +326,55 @@ protected:
         graph->allocations.clear();
     }
 
+    void replaceDuringReplyMenuEffect(bool crossGUI) {
+        auto destination = crossGUI ? addStatic(0, 63) : nullptr;
+        auto first = dialogue("reply_effect_old", true);
+        first->replies[0].cameraAngle = 2;
+        first->replies[0].camVidEffect = 0;
+        auto next = dialogue("reply_effect_new", !crossGUI, crossGUI);
+        next->entries[0].cameraAngle = crossGUI ? 6 : 4;
+        next->entries[0].camVidEffect = -2; // No recursive effect lookup for the static feed.
+        Conversation *replacement = crossGUI ? static_cast<Conversation *>(computer) : dialog;
+        start(first);
+        const auto oldGeneration = Access::generation(*dialog);
+        auto oldModel = graph->cameraModel;
+        std::weak_ptr<scene::CameraSceneNode> replacementCamera;
+        EXPECT_CALL(engine.resourceModule().twoDas(), get("videoeffects"))
+            .WillOnce(Invoke([&](const std::string &) {
+                start(next);
+                Access::tick(*game, 0);
+                replacementCamera = game->getActiveCamera()->cameraSceneNode();
+                return TwoDA::Builder().columns({"enablescannoise"}).row({"1"}).build();
+            }));
+        Access::endEntry(*dialog);
+        EXPECT_EQ(0, dialog->entryEndedCalls);
+        ASSERT_EQ(replacement, Access::active(*game));
+        EXPECT_NE(oldGeneration, Access::generation(*replacement));
+        EXPECT_TRUE(Access::current(*replacement));
+        EXPECT_EQ(&next->entries[0], Access::entry(*replacement));
+        EXPECT_EQ(&next->replies[0], Access::reply(*replacement));
+        EXPECT_FALSE(Access::entryEnded(*replacement));
+        EXPECT_FALSE(Access::repliesVisible(*dialog));
+        EXPECT_EQ(Control::TextAlign::CenterTop, Access::messageAlignment(*dialog));
+        EXPECT_EQ(Game::Screen::Conversation, game->currentScreen());
+        EXPECT_TRUE(oldModel.expired());
+        EXPECT_FALSE(Access::effect(*game).active());
+        Access::staleCameraRequests(*game, *dialog, oldGeneration);
+        Access::tick(*game, 0.25f);
+        EXPECT_EQ(replacementCamera.lock().get(), &graph->camera()->get());
+        EXPECT_EQ(crossGUI ? GameCameraType::Static : GameCameraType::Animated, game->cameraType());
+        if (crossGUI) {
+            EXPECT_EQ(destination->cameraSceneNode(), replacementCamera.lock());
+            EXPECT_CALL(*security, render()).Times(1);
+            EXPECT_CALL(*terminal, render()).Times(0);
+            computer->render(); // Entry's feed remains visible; terminal replies remain concealed.
+        } else {
+            EXPECT_FLOAT_EQ(0.25f, graph->cameraModel.lock()->animationChannels().front().time);
+        }
+        Access::finish(*replacement);
+        expectReleased();
+    }
+
     void TearDown() override {
         game.reset(); // Before the scene/services and GUI mocks disappear.
     }
@@ -404,7 +463,7 @@ protected:
     glm::vec3 gameplayListener {0.0f};
     glm::vec3 listener {0.0f};
     std::shared_ptr<NiceMock<MockGUI>> normal, terminal, security;
-    DialogGUI *dialog {nullptr};
+    SessionDialogGUI *dialog {nullptr};
     ComputerGUI *computer {nullptr};
     std::map<std::string, std::shared_ptr<Dialog>> resources;
 };
@@ -2178,4 +2237,123 @@ TEST_P(DialogueCameraSessionTest, video_effect_only_entry_is_not_discarded_as_ro
         Access::finish(*dialog);
         expectReleased();
     }
+}
+
+TEST_P(DialogueCameraSessionTest, reply_menu_effect_lookup_same_gui_replacement_cannot_run_stale_entry_end) {
+    replaceDuringReplyMenuEffect(false);
+}
+
+TEST_P(DialogueCameraSessionTest, reply_menu_effect_lookup_cross_gui_replacement_cannot_run_stale_entry_end) {
+    replaceDuringReplyMenuEffect(true);
+}
+
+TEST_P(DialogueCameraSessionTest, reply_menu_effect_lookup_termination_cannot_run_stale_entry_end) {
+    auto first = dialogue("reply_effect_terminated", true);
+    first->replies[0].camVidEffect = 0;
+    start(first);
+    EXPECT_CALL(engine.resourceModule().twoDas(), get("videoeffects"))
+        .WillOnce(Invoke([&](const std::string &) {
+            Access::finish(*dialog);
+            return TwoDA::Builder().columns({"enablescannoise"}).row({"1"}).build();
+        }));
+    Access::endEntry(*dialog);
+    EXPECT_EQ(0, dialog->entryEndedCalls);
+    EXPECT_FALSE(Access::repliesVisible(*dialog));
+    EXPECT_EQ(Control::TextAlign::CenterTop, Access::messageAlignment(*dialog));
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, entry_framing_lookup_replacement_cannot_hide_replacement_reply_menu) {
+    auto first = dialogue("entry_framing_old", false);
+    first->entries[0].cameraAngle = 1;
+    first->entries[0].animations = {{kObjectTagPlayer, 10000}};
+    auto next = dialogue("entry_framing_new", true);
+    EXPECT_CALL(engine.resourceModule().twoDas(), get("dialoganimations"))
+        .WillOnce(Return(nullptr)) // Participant animation lookup, before framing.
+        .WillOnce(Invoke([&](const std::string &) {
+            start(next);
+            Access::endEntry(*dialog);
+            return nullptr;
+        }));
+    start(first);
+    ASSERT_EQ(dialog, Access::active(*game));
+    EXPECT_EQ(&next->entries[0], Access::entry(*dialog));
+    EXPECT_TRUE(Access::entryEnded(*dialog));
+    EXPECT_TRUE(Access::repliesVisible(*dialog));
+    EXPECT_EQ(Control::TextAlign::CenterBottom, Access::messageAlignment(*dialog));
+    Access::finish(*dialog);
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, reply_framing_lookup_replacement_cannot_reposition_retired_gui) {
+    auto first = dialogue("reply_framing_old", false);
+    first->entries[0].cameraAngle = 2;
+    first->entries[0].animations = {{kObjectTagPlayer, 10000}};
+    first->replies[0].cameraAngle = 1;
+    auto next = dialogue("reply_framing_new", true, true);
+    start(first);
+    EXPECT_EQ(Control::TextAlign::CenterTop, Access::messageAlignment(*dialog));
+    EXPECT_CALL(engine.resourceModule().twoDas(), get("dialoganimations"))
+        .WillOnce(Invoke([&](const std::string &) {
+            start(next);
+            return nullptr;
+        }));
+    Access::endEntry(*dialog);
+    ASSERT_EQ(computer, Access::active(*game));
+    EXPECT_EQ(&next->entries[0], Access::entry(*computer));
+    EXPECT_FALSE(Access::entryEnded(*computer));
+    EXPECT_EQ(Control::TextAlign::CenterTop, Access::messageAlignment(*dialog));
+    Access::finish(*computer);
+    expectReleased();
+}
+
+TEST_P(DialogueCameraSessionTest, default_clip_loop_mode_changes_keep_logical_and_rendered_phase_together) {
+    useCameraModel(cameraWithClips({"default"}));
+    auto sequence = cameraSequence("default_properties", 6);
+    const int ordinals[] = {1400, 1200, 1400, 1200, 1200, 1400};
+    for (size_t i = 0; i < sequence->entries.size(); ++i) {
+        sequence->entries[i].cameraAnimation = ordinals[i];
+        sequence->entries[i].waitFlags = Dialog::WaitFlags::waitAnimFinish;
+    }
+    start(sequence);
+    auto model = graph->cameraModel.lock();
+    auto expectPhase = [&](float phase, bool looping, bool finished = false) {
+        ASSERT_EQ(1, model->animationChannels().size());
+        const auto &channel = model->animationChannels().front();
+        EXPECT_EQ("default", channel.anim->name());
+        EXPECT_EQ(looping, (channel.properties.flags & scene::AnimationFlags::loop) != 0);
+        EXPECT_EQ(finished, channel.finished);
+        EXPECT_FLOAT_EQ(phase, channel.time);
+        EXPECT_FLOAT_EQ(phase, Access::clockPhase(*dialog));
+        EXPECT_FALSE(Access::waiting(*dialog)); // Default fallback is never a named-clip wait.
+    };
+    Access::tick(*game, 4.5f);
+    expectPhase(0.5f, true);
+    Access::pick(*dialog);
+    expectPhase(0.5f, false);
+    Access::tick(*game, 0.25f);
+    expectPhase(0.75f, false);
+    Access::pick(*dialog); // Running nonloop -> loop also preserves phase.
+    expectPhase(0.75f, true);
+    Access::tick(*game, 4);
+    expectPhase(0.75f, true);
+    Access::pick(*dialog);
+    expectPhase(0.75f, false);
+    Access::tick(*game, 1);
+    expectPhase(1.75f, false);
+    Access::tick(*game, 0.25f);
+    expectPhase(2, false, true);
+    Access::tick(*game, 0.5f);
+    expectPhase(2, false, true);
+    Access::pick(*dialog); // Completed replay must still restart.
+    expectPhase(0, false);
+    Access::tick(*game, 0.5f);
+    expectPhase(0.5f, false);
+    Access::pick(*dialog);
+    expectPhase(0.5f, true);
+    Access::tick(*game, 2);
+    expectPhase(0.5f, true);
+    model.reset();
+    Access::finish(*dialog);
+    expectReleased();
 }

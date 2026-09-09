@@ -85,3 +85,28 @@ TEST(DialogCameraClock, changed_clip_and_session_reset_do_not_retain_old_phase_o
     EXPECT_FALSE(clock.isWaiting());
     EXPECT_FLOAT_EQ(0, clock.phase());
 }
+
+TEST(DialogCameraClock, default_clip_mode_changes_preserve_running_phase_and_completed_replay) {
+    game::DialogCameraClock clock;
+    auto metadata = clip(2, true);
+    const auto loop = resource::decodeCameraAnimation(1400);
+    const auto once = resource::decodeCameraAnimation(1200);
+    clock.request(loop, metadata);
+    clock.update(4.5f);
+    clock.request(once, metadata);
+    EXPECT_FLOAT_EQ(0.5f, clock.phase());
+    EXPECT_FALSE(clock.isWaiting());
+    clock.update(0.25f);
+    EXPECT_FLOAT_EQ(0.75f, clock.phase());
+    clock.request(loop, metadata);
+    EXPECT_FLOAT_EQ(0.75f, clock.phase());
+    clock.update(4);
+    EXPECT_FLOAT_EQ(0.75f, clock.phase());
+    clock.request(once, metadata);
+    clock.update(1.25f);
+    EXPECT_FLOAT_EQ(2, clock.phase());
+    EXPECT_FALSE(clock.isWaiting());
+    clock.request(loop, metadata); // A completed clip replays from zero, regardless of its next mode.
+    EXPECT_FLOAT_EQ(0, clock.phase());
+    EXPECT_FALSE(clock.isWaiting());
+}
