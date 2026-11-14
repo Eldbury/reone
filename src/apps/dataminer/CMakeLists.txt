@@ -21,6 +21,7 @@ set(DATAMINER_HEADERS
     ${DATAMINER_SOURCE_DIR}/gffparsers.h
     ${DATAMINER_SOURCE_DIR}/guis.h
     ${DATAMINER_SOURCE_DIR}/models.h
+    ${DATAMINER_SOURCE_DIR}/resourceparity.h
     ${DATAMINER_SOURCE_DIR}/routines.h)
 
 set(DATAMINER_SOURCES
@@ -29,6 +30,7 @@ set(DATAMINER_SOURCES
     ${DATAMINER_SOURCE_DIR}/guis.cpp
     ${DATAMINER_SOURCE_DIR}/main.cpp
     ${DATAMINER_SOURCE_DIR}/models.cpp
+    ${DATAMINER_SOURCE_DIR}/resourceparity.cpp
     ${DATAMINER_SOURCE_DIR}/routines.cpp)
 
 add_executable(dataminer ${DATAMINER_SOURCES} ${DATAMINER_HEADERS} ${CLANG_FORMAT_PATH})

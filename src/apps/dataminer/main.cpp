@@ -23,6 +23,7 @@
 #include "gffparsers.h"
 #include "guis.h"
 #include "models.h"
+#include "resourceparity.h"
 #include "routines.h"
 
 using namespace reone;
@@ -36,7 +37,8 @@ int main(int argc, char **argv) {
             ("k1dir", boost::program_options::value<std::string>())           //
             ("k2dir", boost::program_options::value<std::string>())           //
             ("destdir", boost::program_options::value<std::string>())         //
-            ("restype", boost::program_options::value<std::string>());        //
+            ("restype", boost::program_options::value<std::string>())         //
+            ("root", boost::program_options::value<std::vector<std::string>>());
 
         boost::program_options::variables_map vars;
         boost::program_options::store(boost::program_options::parse_command_line(argc, argv, description), vars);
@@ -105,6 +107,17 @@ int main(int argc, char **argv) {
             checkThat(static_cast<bool>(k2Dir), "Missing required k2dir argument");
             checkThat(static_cast<bool>(destDir), "Missing required destdir argument");
             generateRoutines(*k1Dir, *k2Dir, *destDir);
+        } else if (job == "resourceparity") {
+            checkThat(static_cast<bool>(k1Dir) != static_cast<bool>(k2Dir), "Give either k1dir or k2dir");
+            std::vector<std::filesystem::path> roots;
+            if (vars.count("root") > 0) {
+                for (const auto &root : vars["root"].as<std::vector<std::string>>()) {
+                    roots.emplace_back(root);
+                }
+            }
+            auto agreed = k1Dir ? compareResourceBackends(GameID::KotOR, *k1Dir, roots)
+                                : compareResourceBackends(GameID::TSL, *k2Dir, roots);
+            return agreed ? 0 : 1;
         } else {
             throw std::runtime_error("Invalid job argument: " + job);
         }
